@@ -46,6 +46,33 @@ const objectId = (id, type) => {
 };
 const pagination = (page, limit, total) => ({ page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) });
 const statusTimestamp = status => status === 'saved' ? 'savedAt' : status === 'discarded' ? 'notUsefulAt' : null;
+const deletionDateField = status => statusTimestamp(status) || 'discoveredAt';
+export function leadDeletionFilter({ status = 'all', scope = 'all', from, to } = {}) {
+  if (!['all', 'new', 'saved', 'discarded'].includes(status) || !['all', 'custom'].includes(scope)) {
+    throw new AppError('Invalid deletion filter', 400, 'VALIDATION_ERROR');
+  }
+
+  const filter = status === 'all' ? {} : { status };
+  // A lifecycle date is the meaningful date for resolved leads. New and mixed
+  // selections remain anchored to the original discovery date.
+  if (scope === 'custom') applyDateRange(filter, parseDateRange({ from, to }, deletionDateField(status)));
+  return filter;
+}
+export async function leadDeletionPreview(leadModel, payload) {
+  const filter = leadDeletionFilter(payload);
+  const statuses = ['new', 'saved', 'discarded'];
+  const [count, ...counts] = await Promise.all([
+    leadModel.countDocuments(filter),
+    ...statuses.map(status => leadModel.countDocuments({ ...filter, status }))
+  ]);
+  return { count, breakdown: { total: count, new: counts[0], saved: counts[1], discarded: counts[2] } };
+}
+export async function deleteMatchingLeads(leadModel, payload) {
+  if (payload?.confirmation !== 'DELETE') throw new AppError('Type DELETE to permanently delete matching leads', 400, 'CONFIRMATION_REQUIRED');
+  const filter = leadDeletionFilter(payload);
+  const result = await leadModel.deleteMany(filter);
+  return result.deletedCount;
+}
 function leadFilter(query, { allowJob = true } = {}) {
   const filter = {};
   if (query.status) filter.status = assertLeadStatus(query.status);
@@ -151,20 +178,11 @@ app.post('/api/leads/bulk', async (req, res) => {
   res.json({ changed });
 });
 app.post('/api/settings/lead-deletion/count', async (req, res) => {
-  const { status = 'all', scope = 'all', from, to, searchJobId } = req.body || {};
-  if (!['all', 'new', 'saved', 'discarded'].includes(status) || !['all', 'custom'].includes(scope)) throw new AppError('Invalid deletion filter', 400, 'VALIDATION_ERROR');
-  const filter = status === 'all' ? {} : { status };
-  if (searchJobId) { objectId(searchJobId, 'Search job'); filter.searchJobId = searchJobId; }
-  if (scope === 'custom') applyDateRange(filter, parseDateRange({ from, to }, 'discoveredAt'));
-  res.json({ count: await Lead.countDocuments(filter) });
+  res.json(await leadDeletionPreview(Lead, req.body));
 });
 app.post('/api/settings/lead-deletion', async (req, res) => {
-  if (req.body?.confirmation !== 'DELETE') throw new AppError('Type DELETE to permanently delete matching leads', 400, 'CONFIRMATION_REQUIRED');
-  const { status = 'all', scope = 'all', from, to, searchJobId } = req.body || {};
-  if (!['all', 'new', 'saved', 'discarded'].includes(status) || !['all', 'custom'].includes(scope)) throw new AppError('Invalid deletion filter', 400, 'VALIDATION_ERROR');
-  const filter = status === 'all' ? {} : { status }; if (searchJobId) { objectId(searchJobId, 'Search job'); filter.searchJobId = searchJobId; }
-  if (scope === 'custom') applyDateRange(filter, parseDateRange({ from, to }, 'discoveredAt'));
-  const result = await Lead.deleteMany(filter); res.json({ deleted: result.deletedCount });
+  const deleted = await deleteMatchingLeads(Lead, req.body);
+  res.json({ deleted });
 });
 app.get('/api/search-history', async (req, res) => {
   const { page, limit } = parsePagination(req.query);
