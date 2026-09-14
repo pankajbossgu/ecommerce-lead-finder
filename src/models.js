@@ -37,6 +37,10 @@ export const SearchHistory = mongoose.model('SearchHistory', historySchema);
 // for the one unresolved discovery session allowed by the product.
 const discoveryStateSchema = new mongoose.Schema({
   _id: { type: String, default: 'current' },
-  currentJobId: { type: mongoose.Schema.Types.ObjectId, ref: 'SearchJob', default: null }
+  currentJobId: { type: mongoose.Schema.Types.ObjectId, ref: 'SearchJob', default: null },
+  // Retain the most recently started job so a refresh immediately after a
+  // cancellation can render the durable cancelled result rather than a stale
+  // client-side searching state.
+  lastJobId: { type: mongoose.Schema.Types.ObjectId, ref: 'SearchJob', default: null }
 }, { timestamps: true, versionKey: false });
 export const DiscoveryState = mongoose.model('DiscoveryState', discoveryStateSchema);
