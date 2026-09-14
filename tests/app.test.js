@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { corsOptionsForRequest, isAllowedCorsOrigin } from '../src/app.js';
+import { corsOptionsForRequest, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview } from '../src/app.js';
 import { activeJobFilter, isTerminalJobStatus } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeDomain, normalizeEmail, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 
@@ -119,4 +119,55 @@ test('regression contracts: timestamps, filtered CSV and guarded permanent delet
   assert.match(app, /\/api\/leads\/export/); assert.match(app, /replace\(\/"\/g, '\"\"'\)/);
   assert.match(app, /\/api\/settings\/lead-deletion\/count/); assert.match(app, /confirmation !== 'DELETE'/);
   assert.match(app, /status: action, savedAt/);
+});
+
+const deletionLeads = [
+  { id: 'new-in-range', status: 'new', discoveredAt: new Date('2026-01-15'), savedAt: null, notUsefulAt: null },
+  { id: 'new-out-of-range', status: 'new', discoveredAt: new Date('2026-02-15'), savedAt: null, notUsefulAt: null },
+  { id: 'saved-in-range', status: 'saved', discoveredAt: new Date('2025-12-01'), savedAt: new Date('2026-01-15'), notUsefulAt: null },
+  { id: 'saved-discovered-in-range', status: 'saved', discoveredAt: new Date('2026-01-15'), savedAt: new Date('2025-12-01'), notUsefulAt: null },
+  { id: 'discarded-in-range', status: 'discarded', discoveredAt: new Date('2025-12-01'), savedAt: null, notUsefulAt: new Date('2026-01-15') },
+  { id: 'discarded-discovered-in-range', status: 'discarded', discoveredAt: new Date('2026-01-15'), savedAt: null, notUsefulAt: new Date('2025-12-01') }
+];
+const matchesFilter = (lead, filter) => Object.entries(filter).every(([key, condition]) => {
+  if (key === 'status') return lead.status === condition;
+  return (!condition.$gte || lead[key] >= condition.$gte) && (!condition.$lt || lead[key] < condition.$lt);
+});
+const fakeLeadModel = (leads) => ({
+  countDocuments: async filter => leads.filter(lead => matchesFilter(lead, filter)).length,
+  deleteMany: async filter => {
+    const matching = leads.filter(lead => matchesFilter(lead, filter));
+    matching.forEach(lead => leads.splice(leads.indexOf(lead), 1));
+    return { deletedCount: matching.length };
+  }
+});
+
+test('settings deletion dates use each lead lifecycle timestamp', () => {
+  const custom = { scope: 'custom', from: '2026-01-01', to: '2026-01-31' };
+  assert.equal(leadDeletionFilter({ ...custom, status: 'saved' }).savedAt.$gte.toISOString(), '2026-01-01T00:00:00.000Z');
+  assert.equal(leadDeletionFilter({ ...custom, status: 'discarded' }).notUsefulAt.$gte.toISOString(), '2026-01-01T00:00:00.000Z');
+  assert.equal(leadDeletionFilter({ ...custom, status: 'new' }).discoveredAt.$gte.toISOString(), '2026-01-01T00:00:00.000Z');
+  assert.equal(leadDeletionFilter({ ...custom, status: 'all' }).discoveredAt.$gte.toISOString(), '2026-01-01T00:00:00.000Z');
+});
+
+test('settings deletion preview is the actual matching set and deletes only intended leads', async () => {
+  const leads = structuredClone(deletionLeads); const model = fakeLeadModel(leads);
+  const payload = { status: 'saved', scope: 'custom', from: '2026-01-01', to: '2026-01-31' };
+  const preview = await leadDeletionPreview(model, payload);
+  assert.equal(preview.count, 1);
+  assert.equal(preview.breakdown.total, 1);
+  assert.equal(await deleteMatchingLeads(model, { ...payload, confirmation: 'DELETE' }), preview.count);
+  assert.deepEqual(leads.map(lead => lead.id).sort(), deletionLeads.filter(lead => lead.id !== 'saved-in-range').map(lead => lead.id).sort());
+});
+
+test('settings deletion matches Saved, Not Useful, and New records by their selected date', async () => {
+  for (const [status, expectedId] of [['saved', 'saved-in-range'], ['discarded', 'discarded-in-range'], ['new', 'new-in-range']]) {
+    const preview = await leadDeletionPreview(fakeLeadModel(structuredClone(deletionLeads)), { status, scope: 'custom', from: '2026-01-01', to: '2026-01-31' });
+    assert.equal(preview.count, 1, `${status} should match only ${expectedId}`);
+  }
+});
+
+test('settings deletion rejects invalid ranges and confirmation', async () => {
+  assert.throws(() => leadDeletionFilter({ status: 'new', scope: 'custom', from: '2026-02-01', to: '2026-01-31' }), /greater than or equal/);
+  await assert.rejects(deleteMatchingLeads(fakeLeadModel(structuredClone(deletionLeads)), { status: 'new', confirmation: 'delete' }), /Type DELETE/);
 });
