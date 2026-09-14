@@ -44,7 +44,7 @@ Set these values in `.env`:
 | `GEMINI_API_KEY` | Yes | Server-only Gemini API credential. |
 | `MONGODB_URI` | Yes | MongoDB Atlas connection URI; the application selects `ecommerce_lead_finder`. |
 | `NODE_ENV` | Yes | `development` or `production`. |
-| `APP_ORIGIN` | Yes | Comma-separated allowed browser origins. |
+| `APP_ORIGIN` | No | Comma-separated allowed browser origins for a separate frontend. Same-origin requests are allowed automatically. |
 | `LOG_LEVEL` | Yes | Logging verbosity setting. |
 | `DISCOVERY_RATE_LIMIT_WINDOW_MS` | No | Rate-limit window (default 900000). |
 | `DISCOVERY_RATE_LIMIT_MAX` | No | Max jobs per window (default 10). |
@@ -79,7 +79,7 @@ Availability of Google Search grounding and URL Context depends on Gemini 3.1 Fl
 ## Vercel deployment
 
 1. Import the repository into Vercel.
-2. In **Project → Settings → Environment Variables**, add `MONGODB_URI` and `GEMINI_API_KEY`; set `NODE_ENV=production` and `APP_ORIGIN` to the production Vercel URL.
+2. In **Project → Settings → Environment Variables**, add `MONGODB_URI` and `GEMINI_API_KEY`; set `NODE_ENV=production`. `APP_ORIGIN` is optional and is only needed for a separate frontend origin.
 3. Deploy. `api/index.js` exports the Express app and sets a 60-second maximum duration; `vercel.json` rewrites requests through the Express entry point.
 4. Use MongoDB Atlas or another MongoDB endpoint reachable from Vercel.
 
