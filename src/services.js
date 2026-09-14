@@ -3,14 +3,24 @@ import crypto from 'node:crypto';
 import { env, Lead, SearchHistory, SearchJob } from './models.js';
 import { AppError, isSafePublicUrl, isValidPublicEmail, logger, normalizeDomain, normalizeEmail, normalizePhone, normalizeUrl } from './utils.js';
 const candidateSchema = { type: 'object', properties: { candidates: { type: 'array', items: { type: 'object', properties: { businessName: { type: 'string' }, officialWebsite: { type: 'string' }, email: { type: ['string', 'null'] }, phone: { type: ['string', 'null'] }, isEcommerce: { type: 'boolean' }, websiteSourceUrl: { type: ['string', 'null'] }, emailSourceUrl: { type: ['string', 'null'] }, emailSourceType: { type: ['string', 'null'], enum: ['website', 'social', null] }, isOfficialSocialProfile: { type: ['boolean', 'null'] }, phoneSourceUrl: { type: ['string', 'null'] } }, required: ['businessName', 'officialWebsite', 'email', 'phone', 'isEcommerce', 'websiteSourceUrl', 'emailSourceUrl', 'emailSourceType', 'isOfficialSocialProfile', 'phoneSourceUrl'] } } }, required: ['candidates'] };
-export const buildDiscoveryPrompt = (input, variation) => `Find up to ${env.discoveryBatchSize} genuine physical-product e-commerce businesses for cold-lead research. Search: ${variation}. Category: ${input.category}. Location: ${input.location}. Optional keywords: ${input.keywords || 'none'}.
+export const normalizeDiscoveredDomains = (domains = []) => [...new Set((Array.isArray(domains) ? domains : []).map(normalizeDomain).filter(Boolean))];
+export const buildDiscoveryPrompt = (input, variation, discoveredDomains = []) => {
+  const exclusions = normalizeDiscoveredDomains(discoveredDomains);
+  const exclusionInstructions = exclusions.length ? `
+
+Previously discovered websites — DO NOT RETURN:
+${exclusions.join('\n')}
+
+Do not return these businesses or domains. Find different businesses relevant to the user's category and location. Do not simply change the URL or page and return the same business; treat exact normalized domain matching as the business identity signal. Find businesses not present in the previously discovered domain list.` : '';
+  return `Find up to ${env.discoveryBatchSize} genuine physical-product e-commerce businesses for cold-lead research. Search: ${variation}. Category: ${input.category}. Location: ${input.location}. Optional keywords: ${input.keywords || 'none'}.
 
 Target D2C brands, online retailers, independent e-commerce stores, Shopify stores, and brands that sell and ship physical products online. Treat D2C, Shopify, COD, and similar terms as preferences only when they fit the user's category or optional keywords; they are never universal requirements. Reject e-commerce/marketing/web-development agencies, SaaS or software companies, consultants, logistics or service providers, directories, marketplaces that only list other sellers, social-only businesses, and businesses that do not sell physical products online.
 
 Every candidate MUST have a legitimate official business website representing that business. Never use a directory, marketplace/seller page, or social profile as officialWebsite. Use Google Search grounding and URL Context to check the official website first, including its Contact, About, footer, support, help, shipping, and other legitimate pages on the same official domain.
 
-A candidate MUST include an exact, publicly displayed business email and its exact emailSourceUrl. Never infer, guess, construct, or fabricate an email, and never use private/personal contact information. First use a valid public email displayed on the official website; set emailSourceType to "website" and set emailSourceUrl to the relevant official-domain page. Only if the website has no usable public business email may you use a readily available official business social profile (such as Instagram, Facebook, or LinkedIn) as a fallback. For a social fallback, set emailSourceType to "social", set isOfficialSocialProfile to true, and use that exact social profile URL as emailSourceUrl. Verify reasonable ownership evidence before doing so: matching business name, linked/matching official domain, matching branding, or matching location. Do not use a similarly named or unrelated social account. Do not use third-party lead databases, directory listings, or search snippets as source evidence. Phone is optional. Include source URLs and use null for absent optional data.`;
-async function discoverWithGemini(input, variation) { if (!env.geminiApiKey) throw new AppError('Lead discovery is temporarily unavailable. Please try again.', 503, 'GEMINI_UNAVAILABLE'); try { const ai = new GoogleGenAI({ apiKey: env.geminiApiKey }); const response = await ai.models.generateContent({ model: 'gemini-3.1-flash-lite', contents: buildDiscoveryPrompt(input, variation), config: { tools: [{ googleSearch: {} }, { urlContext: {} }], responseMimeType: 'application/json', responseJsonSchema: candidateSchema, temperature: 0.2 } }); const parsed = JSON.parse(response.text || '{"candidates":[]}'); return Array.isArray(parsed.candidates) ? parsed.candidates : []; } catch { throw new AppError('Lead discovery is temporarily unavailable. Please try again.', 503, 'GEMINI_UNAVAILABLE'); } }
+A candidate MUST include an exact, publicly displayed business email and its exact emailSourceUrl. Never infer, guess, construct, or fabricate an email, and never use private/personal contact information. First use a valid public email displayed on the official website; set emailSourceType to "website" and set emailSourceUrl to the relevant official-domain page. Only if the website has no usable public business email may you use a readily available official business social profile (such as Instagram, Facebook, or LinkedIn) as a fallback. For a social fallback, set emailSourceType to "social", set isOfficialSocialProfile to true, and use that exact social profile URL as emailSourceUrl. Verify reasonable ownership evidence before doing so: matching business name, linked/matching official domain, matching branding, or matching location. Do not use a similarly named or unrelated social account. Do not use third-party lead databases, directory listings, or search snippets as source evidence. Phone is optional. Include source URLs and use null for absent optional data.${exclusionInstructions}`;
+};
+async function discoverWithGemini(input, variation, discoveredDomains = []) { if (!env.geminiApiKey) throw new AppError('Lead discovery is temporarily unavailable. Please try again.', 503, 'GEMINI_UNAVAILABLE'); try { const ai = new GoogleGenAI({ apiKey: env.geminiApiKey }); const response = await ai.models.generateContent({ model: 'gemini-3.1-flash-lite', contents: buildDiscoveryPrompt(input, variation, discoveredDomains), config: { tools: [{ googleSearch: {} }, { urlContext: {} }], responseMimeType: 'application/json', responseJsonSchema: candidateSchema, temperature: 0.2 } }); const parsed = JSON.parse(response.text || '{"candidates":[]}'); return Array.isArray(parsed.candidates) ? parsed.candidates : []; } catch { throw new AppError('Lead discovery is temporarily unavailable. Please try again.', 503, 'GEMINI_UNAVAILABLE'); } }
 const variations = input => [`${input.category} e-commerce businesses in ${input.location}`, `online ${input.category} stores in ${input.location}`, `${input.category} brands with online shops in ${input.location}`, `${input.keywords || 'independent'} ${input.category} online brands ${input.location}`];
 const socialProfileHosts = new Set(['instagram.com', 'facebook.com', 'linkedin.com']);
 const isOfficialWebsiteUrl = (sourceUrl, domain) => {
@@ -38,15 +48,16 @@ export async function runDiscovery(jobId) {
   if (persistedFound > job.foundCount) await SearchJob.updateOne(ownedWorkerFilter(jobId, token), { $set: { foundCount: persistedFound } });
   job.foundCount = Math.max(job.foundCount, persistedFound);
   try {
-    let checkpoint = job.checkpoint && typeof job.checkpoint === 'object' ? job.checkpoint : { variationIndex: 0, candidateIndex: 0, candidates: [] };
+    let checkpoint = job.checkpoint && typeof job.checkpoint === 'object' ? job.checkpoint : { variationIndex: 0, candidateIndex: 0, candidates: [], discoveredDomains: [] };
+    checkpoint = { ...checkpoint, discoveredDomains: normalizeDiscoveredDomains(checkpoint.discoveredDomains) };
     // Old numeric checkpoints cannot identify a model response; deliberately
     // start one fresh persisted variation once during the schema migration.
     if (!Array.isArray(checkpoint.candidates) || !checkpoint.candidates.length) {
       if (job.attempts >= env.discoveryMaxAttempts) checkpoint = { ...checkpoint, candidates: [] };
       else {
         const variationIndex = Number(checkpoint.variationIndex) || 0;
-        const candidates = await discoverWithGemini(job, variations(job)[variationIndex % variations(job).length]);
-        const saved = await SearchJob.findOneAndUpdate(ownedWorkerFilter(jobId, token), { $set: { checkpoint: { variationIndex, candidateIndex: 0, batchId: crypto.randomUUID(), candidates } }, $inc: { attempts: 1 } }, { new: true }).lean();
+        const candidates = await discoverWithGemini(job, variations(job)[variationIndex % variations(job).length], checkpoint.discoveredDomains);
+        const saved = await SearchJob.findOneAndUpdate(ownedWorkerFilter(jobId, token), { $set: { checkpoint: { ...checkpoint, variationIndex, candidateIndex: 0, batchId: crypto.randomUUID(), candidates } }, $inc: { attempts: 1 } }, { new: true }).lean();
         if (!saved) return;
         job.attempts = saved.attempts; checkpoint = saved.checkpoint;
       }
@@ -60,6 +71,22 @@ export async function runDiscovery(jobId) {
       job.foundCount = owned.foundCount;
       checkpoint = owned.checkpoint;
       const candidate = checkpoint.candidates[checkpoint.candidateIndex];
+      const candidateDomain = isSupportedSocialProfileUrl(candidate?.officialWebsite) ? null : normalizeDomain(candidate?.officialWebsite);
+      const discoveredDomains = new Set(normalizeDiscoveredDomains(checkpoint.discoveredDomains));
+      if (candidateDomain && discoveredDomains.has(candidateDomain)) {
+        const advanced = await SearchJob.findOneAndUpdate({ ...ownedWorkerFilter(jobId, token), 'checkpoint.candidateIndex': checkpoint.candidateIndex }, { $inc: { duplicateCount: 1, 'checkpoint.candidateIndex': 1 } }, { new: true }).lean();
+        if (!advanced) return;
+        checkpoint = advanced.checkpoint;
+        job.foundCount = advanced.foundCount;
+        continue;
+      }
+      // Persist an identifiable domain before validation so rejected candidates
+      // still become exclusions after a restart or resume.
+      if (candidateDomain) {
+        const tracked = await SearchJob.findOneAndUpdate({ ...ownedWorkerFilter(jobId, token), 'checkpoint.candidateIndex': checkpoint.candidateIndex }, { $addToSet: { 'checkpoint.discoveredDomains': candidateDomain } }, { new: true }).lean();
+        if (!tracked) return;
+        checkpoint = tracked.checkpoint;
+      }
       const lead = prepareLead(candidate, job);
       let update = { $inc: { 'checkpoint.candidateIndex': 1 } };
       if (!lead) update.$inc.rejectedCount = 1;
@@ -101,7 +128,7 @@ export async function runDiscovery(jobId) {
     if (!complete) {
       // Mark a completed variation before releasing the lease. The next poll
       // generates only the next variation, retaining this job's exact history.
-      if (batchFinished) await SearchJob.updateOne(ownedWorkerFilter(jobId, token), { $set: { checkpoint: { variationIndex: fresh.checkpoint.variationIndex + 1, candidateIndex: 0, batchId: null, candidates: [] }, workerToken: null, workerLeaseExpiresAt: null } });
+      if (batchFinished) await SearchJob.updateOne(ownedWorkerFilter(jobId, token), { $set: { checkpoint: { ...fresh.checkpoint, variationIndex: fresh.checkpoint.variationIndex + 1, candidateIndex: 0, batchId: null, candidates: [] }, workerToken: null, workerLeaseExpiresAt: null } });
       else await SearchJob.updateOne(ownedWorkerFilter(jobId, token), { $set: { workerToken: null, workerLeaseExpiresAt: null } });
       return;
     }

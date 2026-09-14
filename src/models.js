@@ -52,7 +52,7 @@ const jobSchema = new mongoose.Schema({
   attempts: { type: Number, default: 0 },
   // Persist the model response and cursor so a serverless retry resumes the
   // exact variation/candidate rather than regenerating a batch.
-  checkpoint: { variationIndex: { type: Number, default: 0 }, candidateIndex: { type: Number, default: 0 }, batchId: { type: String, default: null }, candidates: { type: [mongoose.Schema.Types.Mixed], default: [] } },
+  checkpoint: { variationIndex: { type: Number, default: 0 }, candidateIndex: { type: Number, default: 0 }, batchId: { type: String, default: null }, candidates: { type: [mongoose.Schema.Types.Mixed], default: [] }, discoveredDomains: { type: [String], default: [] } },
   workerToken: { type: String, default: null }, workerLeaseExpiresAt: { type: Date, default: null },
   startedAt: { type: Date, default: null }, completedAt: { type: Date, default: null }, errorMessage: { type: String, default: null }
 }, { timestamps: true, versionKey: false });
