@@ -13,7 +13,9 @@ const allowedOrigins = env.appOrigin.split(',').map((origin) => origin.trim()).f
 app.disable('x-powered-by');
 app.use(async (_req, _res, next) => { try { await connectDatabase(); next(); } catch (error) { next(error); } });
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
-app.use(cors({ origin(origin, callback) { if (!origin || allowedOrigins.includes(origin)) return callback(null, true); return callback(new Error('Origin not allowed by CORS')); }, methods: ['GET', 'POST', 'PATCH', 'DELETE'], allowedHeaders: ['Content-Type'] }));
+// Same-origin requests do not require CORS headers. Unknown cross-origin callers
+// receive no CORS grant rather than turning a missing APP_ORIGIN into an outage.
+app.use(cors({ origin(origin, callback) { return callback(null, !origin || allowedOrigins.includes(origin)); }, methods: ['GET', 'POST', 'PATCH', 'DELETE'], allowedHeaders: ['Content-Type'] }));
 app.use(express.json({ limit: '20kb', type: 'application/json' }));
 app.use('/api', routes);
 app.use(express.static(publicDirectory, { index: 'index.html', maxAge: env.nodeEnv === 'production' ? '1h' : 0 }));

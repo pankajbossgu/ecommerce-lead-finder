@@ -13,7 +13,7 @@ const candidateSchema = {
 async function discoverWithGemini(input, variation) {
   if (!env.geminiApiKey) throw new AppError('Lead discovery is temporarily unavailable. Please try again.', 503, 'GEMINI_UNAVAILABLE');
   const prompt = `Find up to ${env.discoveryBatchSize} real e-commerce businesses for cold-lead research. Search: ${variation}. Category: ${input.category}. Location: ${input.location}. Optional keywords: ${input.keywords || 'none'}.
-Return only businesses that actually sell products online and have a likely official website. Never use directories, marketplaces, social profiles, or seller pages as official websites. A candidate MUST include an exact publicly listed business email supported by emailSourceUrl; never infer, guess, or fabricate an email. Phone is optional. Include source URLs and use null for absent optional data.`;
+Return unique businesses and unique normalized domains within this response. Return only real businesses that actually sell products online and their official website. Never use directories, marketplaces, social profiles, seller/profile pages, or contact aggregators as the official website. A candidate MUST include an exact publicly listed business email supported by emailSourceUrl; never infer, guess, fabricate, or use private/personal contact information. Phone is optional: return null when unavailable. Include source URLs for the official website and all returned contact data. Do not return duplicates.`;
   try {
     const ai = new GoogleGenAI({ apiKey: env.geminiApiKey });
     const response = await ai.models.generateContent({ model: env.geminiModel, contents: prompt, config: { tools: [{ googleSearch: {} }, { urlContext: {} }], responseMimeType: 'application/json', responseJsonSchema: candidateSchema, temperature: 0.2 } });
@@ -23,6 +23,16 @@ Return only businesses that actually sell products online and have a likely offi
 }
 
 const variations = (input) => [`${input.category} e-commerce businesses in ${input.location}`, `online ${input.category} stores in ${input.location}`, `${input.category} brands with online shops in ${input.location}`, `${input.keywords || 'independent'} ${input.category} online brands ${input.location}`];
+// Keep pass-local candidate repetition out of the database path. MongoDB's
+// unique domain index remains the final guard for concurrent writers.
+export function createSeenDomainTracker() {
+  const seenDomains = new Set();
+  return (domain) => {
+    if (seenDomains.has(domain)) return true;
+    seenDomains.add(domain);
+    return false;
+  };
+}
 function prepareLead(candidate, input) {
   const website = normalizeUrl(candidate?.officialWebsite), domain = normalizeDomain(website), email = normalizeEmail(candidate?.email);
   if (!candidate?.isEcommerce || !candidate.businessName?.trim() || !website || !domain || !isSafePublicUrl(website) || !isValidPublicEmail(email) || !candidate.emailSourceUrl || !isSafePublicUrl(candidate.emailSourceUrl)) return null;
@@ -35,26 +45,34 @@ export async function runDiscovery(jobId) {
   const started = await SearchJob.findOneAndUpdate({ _id: jobId, status: 'queued' }, { $set: { status: 'running', startedAt: new Date() } }, { new: true });
   if (!started) return;
   const input = started.toObject(); let found = await Lead.countDocuments({ searchJobId: jobId, status: 'pending' }), duplicates = 0, rejected = 0;
+  const wasSeenThisJob = createSeenDomainTracker();
+  const recordHistory = async (status) => SearchHistory.updateOne(
+    { searchJobId: jobId },
+    { $set: { category: input.category, location: input.location, keywords: input.keywords, requestedCount: input.requestedCount, foundCount: found, duplicateCount: duplicates, rejectedCount: rejected, status } },
+    { upsert: true }
+  );
   try {
     for (let attempt = 0; attempt < env.discoveryMaxAttempts && found < input.requestedCount; attempt += 1) {
-      job = await SearchJob.findById(jobId).lean(); if (!job || job.status === 'cancelled') return;
+      job = await SearchJob.findById(jobId).lean(); if (!job || job.status === 'cancelled') { await recordHistory('cancelled'); return; }
       const candidates = await discoverWithGemini(input, variations(input)[attempt % variations(input).length]);
       for (const candidate of candidates) {
         if (found >= input.requestedCount) break;
         const lead = prepareLead(candidate, input);
         if (!lead) { rejected += 1; continue; }
+        if (wasSeenThisJob(lead.domain)) { duplicates += 1; continue; }
         const existing = await Lead.findOne({ domain: lead.domain }).select('status searchJobId').lean();
         if (existing) { duplicates += 1; continue; }
-        if ((await SearchJob.exists({ _id: jobId, status: { $ne: 'cancelled' } })) === null) return;
+        if ((await SearchJob.exists({ _id: jobId, status: { $ne: 'cancelled' } })) === null) { await recordHistory('cancelled'); return; }
         try { await Lead.create({ ...lead, status: 'pending', searchJobId: jobId }); found += 1; } catch (error) { if (error?.code === 11000) duplicates += 1; else throw error; }
       }
       await SearchJob.updateOne({ _id: jobId }, { $set: { foundCount: found, duplicateCount: duplicates, rejectedCount: rejected } });
     }
-    if ((await SearchJob.findById(jobId))?.status === 'cancelled') return;
+    if ((await SearchJob.findById(jobId))?.status === 'cancelled') { await recordHistory('cancelled'); return; }
     await SearchJob.updateOne({ _id: jobId }, { $set: { status: 'completed', foundCount: found, duplicateCount: duplicates, rejectedCount: rejected, completedAt: new Date() } });
-    await SearchHistory.create({ category: input.category, location: input.location, keywords: input.keywords, requestedCount: input.requestedCount, foundCount: found });
+    await recordHistory('completed');
   } catch (error) {
     logger.error('Discovery job failed', jobId, error.message);
     await SearchJob.updateOne({ _id: jobId, status: { $ne: 'cancelled' } }, { $set: { status: 'failed', errorMessage: 'Lead discovery is temporarily unavailable. Please try again.', completedAt: new Date(), foundCount: found, duplicateCount: duplicates, rejectedCount: rejected } });
+    await recordHistory('failed');
   }
 }

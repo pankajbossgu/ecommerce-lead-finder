@@ -21,7 +21,12 @@ const jobSchema = new mongoose.Schema({
 }, { timestamps: true, versionKey: false });
 jobSchema.index({ createdAt: -1 });
 
-const historySchema = new mongoose.Schema({ category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number, foundCount: Number }, { timestamps: true, versionKey: false });
+const historySchema = new mongoose.Schema({
+  searchJobId: { type: mongoose.Schema.Types.ObjectId, ref: 'SearchJob', unique: true, sparse: true },
+  category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number, foundCount: Number,
+  duplicateCount: { type: Number, default: 0 }, rejectedCount: { type: Number, default: 0 },
+  status: { type: String, enum: ['completed', 'failed', 'cancelled'], default: 'completed' }
+}, { timestamps: true, versionKey: false });
 historySchema.index({ createdAt: -1 });
 
 export const Lead = mongoose.model('Lead', leadSchema);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import mongoose from 'mongoose';
 import { Lead } from '../src/models.js';
+import { createSeenDomainTracker } from '../src/services.js';
 import { assertLeadStatus, assertPermanentLeadStatus, uniqueObjectIds, isValidPublicEmail, normalizeDomain, normalizeEmail, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 
 test('normalizes domains without losing meaningful subdomains', () => {
@@ -40,6 +41,27 @@ test('permanent lifecycle transitions reject every non-pending target and bulk i
   assert.throws(() => uniqueObjectIds(ids));
 });
 
+test('same-job duplicate tracker recognizes normalized domains without using business names', () => {
+  const seen = createSeenDomainTracker();
+  assert.equal(seen(normalizeDomain('https://www.brand.example/shop')), false);
+  assert.equal(seen(normalizeDomain('https://brand.example/contact')), true);
+  assert.equal(seen(normalizeDomain('https://another-brand.example')), false);
+});
+
+test('workflow API exposes durable current state, scoped mutations, and distinct lock codes', async () => {
+  const routes = await readFile(new URL('../src/routes.js', import.meta.url), 'utf8');
+  const services = await readFile(new URL('../src/services.js', import.meta.url), 'utf8');
+  assert.match(routes, /GET \/api\/discovery\/current|router\.get\('\/discovery\/current'/);
+  assert.match(routes, /SEARCH_BLOCKED_ACTIVE_JOB/);
+  assert.match(routes, /SEARCH_BLOCKED_PENDING_LEADS/);
+  assert.match(routes, /Lead\.deleteMany\(\{ status: 'pending', searchJobId: req\.params\.id \}\)/);
+  assert.match(routes, /status: 'pending', searchJobId: current\.job\._id/);
+  assert.match(routes, /SearchHistory\.updateOne\(\{ searchJobId: job\._id \}/);
+  assert.match(services, /const wasSeenThisJob = createSeenDomainTracker/);
+  assert.match(services, /status: 'pending', searchJobId: jobId/);
+  assert.match(services, /recordHistory\('cancelled'\)/);
+});
+
 test('frontend recovery and permanent-lead UI use the current-state and bulk APIs', async () => {
   const app = await readFile(new URL('../public/js/app.js', import.meta.url), 'utf8');
   const routes = await readFile(new URL('../src/routes.js', import.meta.url), 'utf8');
@@ -49,4 +71,6 @@ test('frontend recovery and permanent-lead UI use the current-state and bulk API
   assert.match(routes, /\/leads\/bulk-status/);
   assert.match(routes, /status: 'pending', searchJobId: current\.job\._id/);
   assert.doesNotMatch(routes, /Only saved or Not Useful leads can be restored/);
+  assert.match(app, /Cancelling…/);
+  assert.match(app, /pending-metric-count/);
 });
