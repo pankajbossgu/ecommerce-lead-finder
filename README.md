@@ -93,13 +93,10 @@ Secrets are excluded by `.gitignore` and are never sent to browser JavaScript. T
 
 ```text
 public/                 responsive vanilla frontend
-src/config.js           environment and MongoDB connection
-src/models.js           Lead, SearchJob, SearchHistory schemas
-src/services.js         Gemini discovery, grounded search, and job workflow
-src/routes.js           HTTP routes, validation, rate limit, and handlers
-src/utils.js            normalization, validation, errors, and logging
-src/app.js              Express security and static application setup
-src/server.js           local startup and stale-job recovery
+src/app.js              Express setup, API routes, static serving, Vercel handling, and local startup
+src/services.js         Gemini discovery, qualification, lead processing, and job workflow
+src/models.js           environment, MongoDB connection, schemas, models, and indexes
+src/utils.js            deterministic normalization, validation, errors, and logging
 tests/app.test.js       deterministic unit tests
 api/index.js            Vercel Express entry
 ```
