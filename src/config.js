@@ -13,7 +13,7 @@ export const env = Object.freeze({
   port: number('PORT', 3000),
   mongoUri: process.env.MONGODB_URI || '',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+  geminiModel: 'gemini-3.1-flash-lite',
   appOrigin: process.env.APP_ORIGIN || 'http://localhost:3000',
   rateLimitWindowMs: number('DISCOVERY_RATE_LIMIT_WINDOW_MS', 900000),
   rateLimitMax: number('DISCOVERY_RATE_LIMIT_MAX', 10),
