@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { corsOptionsForRequest, isAllowedCorsOrigin } from '../src/app.js';
+import { activeJobFilter, isTerminalJobStatus } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeDomain, normalizeEmail, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 
 test('normalizes domains without losing meaningful subdomains', () => {
@@ -21,6 +22,22 @@ test('validates discovery counts, pagination, and lead status lifecycle', () => 
   assert.deepEqual(parsePagination({ page: '2', limit: '50' }), { page: 2, limit: 50 });
   assert.throws(() => parsePagination({ limit: '101' }));
   assert.equal(assertLeadStatus('saved'), 'saved'); assert.throws(() => assertLeadStatus('campaign'));
+});
+
+test('job lifecycle regression: cancelled is terminal and finalisation is ownership guarded', () => {
+  assert.equal(isTerminalJobStatus('queued'), false);
+  assert.equal(isTerminalJobStatus('running'), false);
+  assert.equal(isTerminalJobStatus('completed'), true);
+  assert.equal(isTerminalJobStatus('failed'), true);
+  assert.equal(isTerminalJobStatus('cancelled'), true);
+  assert.deepEqual(activeJobFilter('job-id', 'worker-a'), { _id: 'job-id', status: 'running', workerToken: 'worker-a' });
+  // A cancellation clears workerToken, so a stale worker cannot match this filter
+  // and therefore cannot persist completed/failed progress afterwards.
+  assert.notDeepEqual(activeJobFilter('job-id', 'worker-a'), { _id: 'job-id', status: 'running', workerToken: null });
+});
+
+test('lead action regression: Save, Not Useful, and Restore send supported persisted statuses', () => {
+  for (const status of ['saved', 'discarded', 'new']) assert.equal(assertLeadStatus(status), status);
 });
 
 const requestFor = ({ host = 'finder.vercel.app', protocol = 'https' } = {}) => ({

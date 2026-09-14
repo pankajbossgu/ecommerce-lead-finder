@@ -16,12 +16,12 @@ function empty(title, text) { return `<div class="empty"><b>${escape(title)}</b>
 function loading(text) { return `<div class="empty loading-state"><span class="spinner" aria-hidden="true"></span><b>${escape(text)}</b><span>Please wait a moment.</span></div>`; }
 function plural(count, word = 'lead') { return `${count} ${word}${count === 1 ? '' : 's'}`; }
 
-function setDiscoveryRunning(running) {
+function setDiscoveryRunning(running, cancelling = false) {
   const fields = $('#discovery-fields'); const submit = $('#find-leads-button');
   fields.disabled = running; submit.disabled = running;
-  submit.textContent = running ? 'Searching…' : 'Find leads';
+  submit.textContent = cancelling ? 'Cancelling…' : running ? 'Searching…' : 'Find leads';
   $('#discovery-form').classList.toggle('is-locked', running);
-  $('#form-lock-note').textContent = running ? 'Discovery is active. Search details will be available when it finishes.' : 'Results exclude businesses already discovered, saved, or marked not useful.';
+  $('#form-lock-note').textContent = cancelling ? 'Waiting for the server to confirm cancellation…' : running ? 'Discovery is active. Search details will be available when it finishes.' : 'Results exclude businesses already discovered, saved, or marked not useful.';
 }
 function stopPolling() { if (state.poll) clearInterval(state.poll); state.poll = null; state.pollInFlight = false; }
 function clearActiveJob() { localStorage.removeItem(ACTIVE_JOB_KEY); }
@@ -66,14 +66,14 @@ async function loadHistory() {
   try { const data = await api(`/api/search-history?page=${state.pages.history}&limit=25`); $('#history-results').innerHTML = data.items.length ? `<table class="history-table"><thead><tr><th>Category</th><th>Location</th><th>Keywords</th><th>Requested</th><th>Found</th><th>Date</th></tr></thead><tbody>${data.items.map(item => `<tr><td data-label="Category" class="business">${escape(item.category)}</td><td data-label="Location">${escape(item.location)}</td><td data-label="Keywords">${escape(item.keywords || '—')}</td><td data-label="Requested"><span class="count-chip neutral">${plural(item.requestedCount, 'requested')}</span></td><td data-label="Found"><span class="count-chip">${plural(item.foundCount)}</span></td><td data-label="Date">${new Date(item.createdAt).toLocaleDateString()}</td></tr>`).join('')}</tbody></table>` + pager(data, 'history') : empty('No searches yet', 'Completed discovery requests will appear here.'); } catch { $('#history-results').innerHTML = empty('Unable to load history', 'Please try again in a moment.'); } finally { state.loading.history = false; }
 }
 async function finishJob(job) {
-  stopPolling(); state.jobId = null; state.cancelling = false; clearActiveJob(); setDiscoveryRunning(false); setProgress(job);
+  stopPolling(); state.jobId = null; state.cancelling = false; clearActiveJob(); setDiscoveryRunning(false); setProgress(job); $('#job-progress').hidden = true;
   if (job.status === 'completed') { await loadLeads('new'); $('#results-summary').textContent = job.found ? `Found ${plural(job.found, 'new usable lead')}. Only businesses meeting the website and public email requirement are included.` : 'No new usable leads were found for this search.'; toast(job.found ? `✓ ${plural(job.found, 'new lead')} found` : '✓ Discovery complete'); }
   else if (job.status === 'cancelled') { $('#results-summary').textContent = 'Search cancelled. Adjust your details and try again when ready.'; toast('Search cancelled'); }
   else { $('#results-summary').textContent = 'Discovery could not be completed. Update your search and try again.'; toast(safeMessage(job.error)); }
 }
 async function poll() {
   if (!state.jobId || state.pollInFlight) return; state.pollInFlight = true; const jobId = state.jobId;
-  try { const job = await api(`/api/discovery/jobs/${jobId}`); if (state.jobId !== jobId) return; setProgress(job); if (terminalStates.has(job.status)) await finishJob(job); } catch { if (state.jobId === jobId) { stopPolling(); state.jobId = null; state.cancelling = false; clearActiveJob(); setDiscoveryRunning(false); $('#job-progress').hidden = false; setProgress({ status: 'failed', requested: 0, found: 0, duplicates: 0, rejected: 0 }); toast('Something went wrong. Please try again.'); } } finally { state.pollInFlight = false; }
+  try { const job = await api(`/api/discovery/jobs/${jobId}`); if (state.jobId !== jobId) return; setProgress(job); if (terminalStates.has(job.status)) await finishJob(job); } catch (error) { if (state.jobId === jobId) toast(`Unable to refresh search progress: ${safeMessage(error.message)}`); } finally { state.pollInFlight = false; }
 }
 $('#discovery-form').addEventListener('submit', async event => {
   event.preventDefault(); if (state.jobId) return;
@@ -85,17 +85,18 @@ $('#cancel-job').addEventListener('click', async () => {
   if (!jobId || state.cancelling) return;
   state.cancelling = true;
 
-  // Reset immediately so a refresh cannot accidentally restore a cancelled search.
-  stopPolling(); state.jobId = null; clearActiveJob(); setDiscoveryRunning(false);
-  $('#job-progress').hidden = true; setProgress({ status: 'queued', requested: 0, found: 0, duplicates: 0, rejected: 0 });
-  try { await api(`/api/discovery/jobs/${jobId}/cancel`, { method: 'POST' }); $('#results-summary').textContent = 'Search cancelled. Adjust your details and try again when ready.'; toast('Search cancelled'); }
-  catch { toast('The search was hidden locally, but could not be cancelled on the server.'); }
-  finally { state.cancelling = false; }
+  setDiscoveryRunning(true, true); $('#cancel-job').disabled = true; $('#cancel-job').textContent = 'Cancelling…';
+  try { const job = await api(`/api/discovery/jobs/${jobId}/cancel`, { method: 'POST' }); if (state.jobId === jobId) await finishJob(job); }
+  catch (error) {
+    // Keep the persisted active ID until a terminal server state is confirmed.
+    await poll();
+    if (state.jobId === jobId) { state.cancelling = false; setDiscoveryRunning(true); $('#cancel-job').disabled = false; $('#cancel-job').textContent = 'Cancel search'; toast(`Cancellation was not confirmed: ${safeMessage(error.message)}`); }
+  }
 });
 document.addEventListener('submit', event => { const form = event.target.closest('[data-search-form]'); if (!form) return; event.preventDefault(); const view = form.dataset.searchForm; if (state.loading[view]) return; state.pages[view] = 1; loadLeads(view); });
 document.addEventListener('click', async event => {
   const navigation = event.target.closest('[data-view]'); if (navigation) { event.preventDefault(); location.hash = navigation.dataset.view; setView(navigation.dataset.view); return; }
-  const action = event.target.closest('[data-status]'); if (action) { if (action.disabled) return; const initial = action.textContent; action.disabled = true; action.textContent = action.dataset.status === 'saved' ? 'Saving…' : 'Updating…'; try { await api(`/api/leads/${action.dataset.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: action.dataset.status }) }); toast(action.dataset.status === 'saved' ? '✓ Lead saved' : action.dataset.status === 'discarded' ? '✓ Lead moved to Not Useful' : '✓ Lead restored'); await loadLeads(state.view); if (state.view === 'find') await loadLeads('new'); } catch { action.disabled = false; action.textContent = initial; toast('Something went wrong. Please try again.'); } return; }
+  const action = event.target.closest('[data-status]'); if (action) { if (action.disabled) return; const initial = action.textContent; action.disabled = true; action.textContent = action.dataset.status === 'saved' ? 'Saving…' : action.dataset.status === 'discarded' ? 'Updating…' : 'Restoring…'; try { await api(`/api/leads/${action.dataset.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: action.dataset.status }) }); toast(action.dataset.status === 'saved' ? '✓ Lead saved' : action.dataset.status === 'discarded' ? '✓ Lead moved to Not Useful' : '✓ Lead restored'); await loadLeads(state.view === 'find' ? 'new' : state.view); } catch (error) { action.disabled = false; action.textContent = initial; toast(safeMessage(error.message)); } return; }
   const page = event.target.closest('[data-page-view]'); if (page && !page.disabled) { state.pages[page.dataset.pageView] = Number(page.dataset.page); page.dataset.pageView === 'history' ? loadHistory() : loadLeads(page.dataset.pageView); }
 });
 $('#menu-toggle').addEventListener('click', event => { const navigation = $('#mobile-nav'); navigation.classList.toggle('open'); event.currentTarget.setAttribute('aria-expanded', String(navigation.classList.contains('open'))); });
@@ -109,7 +110,6 @@ if (activeJobId) {
   setDiscoveryRunning(true);
   $('#job-progress').hidden = false;
   setProgress({ status: 'running', requested: 0, found: 0, duplicates: 0, rejected: 0 });
-  $('#progress-title').textContent = 'Searching for businesses… (Resumed)';
   searchingResults();
   void poll().then(() => { if (state.jobId) state.poll = setInterval(poll, 2500); });
 }

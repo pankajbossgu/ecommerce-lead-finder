@@ -47,9 +47,11 @@ const jobSchema = new mongoose.Schema({
   category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number,
   status: { type: String, enum: ['queued', 'running', 'completed', 'failed', 'cancelled'], default: 'queued', index: true },
   foundCount: { type: Number, default: 0 }, duplicateCount: { type: Number, default: 0 }, rejectedCount: { type: Number, default: 0 },
+  attempts: { type: Number, default: 0 }, workerToken: { type: String, default: null }, workerLeaseExpiresAt: { type: Date, default: null },
   startedAt: { type: Date, default: null }, completedAt: { type: Date, default: null }, errorMessage: { type: String, default: null }
 }, { timestamps: true, versionKey: false });
 jobSchema.index({ createdAt: -1 });
+jobSchema.index({ status: 1, workerLeaseExpiresAt: 1 });
 
 const historySchema = new mongoose.Schema({ category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number, foundCount: Number }, { timestamps: true, versionKey: false });
 historySchema.index({ createdAt: -1 });

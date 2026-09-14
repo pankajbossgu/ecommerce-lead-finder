@@ -9,7 +9,7 @@ A lead is saved only when the candidate has an official business website **and**
 ## Features
 
 - Gemini discovery with Google Search grounding, URL Context, and structured JSON output.
-- Bounded, asynchronous MongoDB-backed discovery jobs with live progress polling and cancellation.
+- Bounded, MongoDB-backed discovery jobs with live progress polling, cancellation, and serverless-safe resumability.
 - Deterministic validation of model output, URLs, domains, and public email syntax.
 - Unique normalized-domain protection across new, saved, and discarded leads; concurrent duplicate-key conflicts are handled as duplicates.
 - Find Leads, Saved Leads, Not Useful, and Search History views in a responsive vanilla HTML/CSS/JavaScript dashboard.
@@ -83,7 +83,7 @@ Availability of Google Search grounding and URL Context depends on Gemini 3.1 Fl
 3. Deploy. `api/index.js` exports the Express app and sets a 60-second maximum duration; `vercel.json` rewrites requests through the Express entry point.
 4. Use MongoDB Atlas or another MongoDB endpoint reachable from Vercel.
 
-A request starts a persisted job, schedules bounded work through Vercel `waitUntil`, and browser polling observes its actual counters. `maxDuration` remains 60 seconds, so keep the discovery limits bounded. Workloads needing guaranteed long-running execution beyond that limit should add a managed durable job runner before increasing discovery limits.
+A request creates a persisted job. Each subsequent job-status poll atomically leases and performs at most one bounded discovery pass, then persists its counters before returning. This makes MongoDB the source of truth across refreshes and serverless invocations; no in-memory worker or `waitUntil` continuation is required. A lease prevents simultaneous poll requests from working the same job, and cancellation clears that lease so a stale worker cannot finalise the job. `maxDuration` remains 60 seconds, so each discovery pass must remain bounded. Jobs require an open client (or another caller of the status endpoint) to advance; workloads that must continue without polling should use a managed durable job runner.
 
 ## Security and data handling
 
