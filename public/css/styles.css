@@ -14,3 +14,6 @@
   transition: width .4s ease-in-out;
 }
 .bulk-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;padding:10px 12px;background:var(--brand-pale);border-radius:9px;color:var(--brand-dark);font-weight:700}.bulk-actions>div{display:flex;flex-wrap:wrap;gap:8px}.lead-table input[type=checkbox]{width:18px;height:18px;accent-color:var(--brand)}@media(max-width:760px){.bulk-actions{align-items:stretch;flex-direction:column}.bulk-actions>div{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.bulk-actions .button{padding:8px 6px;font-size:12px}.lead-table td[data-label="Select"]{display:flex;justify-content:flex-end}.lead-table td[data-label="Select"]::before{content:"Select";margin-right:auto}}
+/* The saved-library layout reserves a clear, non-interactive outreach home. */
+.lead-table small{display:block;color:var(--muted);font-size:12px;font-weight:500;margin-top:3px}.sr-no{font-variant-numeric:tabular-nums;color:var(--muted);font-weight:700}.outreach-status{display:inline-block;padding:3px 8px;border-radius:999px;background:var(--brand-pale);color:var(--brand-dark);font-size:12px;font-weight:750}
+.bulk-actions{position:sticky;top:12px;z-index:4;box-shadow:0 5px 14px #16312d16}
