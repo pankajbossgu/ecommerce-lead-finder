@@ -36,6 +36,13 @@ export function isValidPublicEmail(value) {
   if (/^(?:noreply|no-reply|example|test)@/i.test(email)) return false;
   return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(email);
 }
+export function normalizePhone(value) {
+  if (typeof value !== 'string') return null;
+  const phone = value.trim().replace(/\s+/g, ' ');
+  if (!phone || phone.length > 80 || !/^[+()\d.\- xext]+$/i.test(phone)) return null;
+  const digits = phone.replace(/\D/g, '');
+  return digits.length >= 7 && digits.length <= 15 ? phone : null;
+}
 export function isSafePublicUrl(value) {
   const url = normalizeUrl(value); if (!url) return false;
   const host = new URL(url).hostname;

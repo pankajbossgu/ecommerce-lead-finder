@@ -1,7 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
-import { env } from './config.js';
-import { Lead, SearchHistory, SearchJob } from './models.js';
-import { AppError, isSafePublicUrl, isValidPublicEmail, logger, normalizeDomain, normalizeEmail, normalizeUrl } from './utils.js';
+import { env, Lead, SearchHistory, SearchJob } from './models.js';
+import { AppError, isSafePublicUrl, isValidPublicEmail, logger, normalizeDomain, normalizeEmail, normalizePhone, normalizeUrl } from './utils.js';
 
 const candidateSchema = {
   type: 'object', properties: { candidates: { type: 'array', items: { type: 'object', properties: {
@@ -26,7 +25,7 @@ const variations = (input) => [`${input.category} e-commerce businesses in ${inp
 function prepareLead(candidate, input) {
   const website = normalizeUrl(candidate?.officialWebsite), domain = normalizeDomain(website), email = normalizeEmail(candidate?.email);
   if (!candidate?.isEcommerce || !candidate.businessName?.trim() || !website || !domain || !isSafePublicUrl(website) || !isValidPublicEmail(email) || !candidate.emailSourceUrl || !isSafePublicUrl(candidate.emailSourceUrl)) return null;
-  return { businessName: candidate.businessName.trim().slice(0, 200), domain, website, email, phone: typeof candidate.phone === 'string' && candidate.phone.trim() ? candidate.phone.trim().slice(0, 80) : null, category: input.category, location: input.location, keywords: input.keywords, isEcommerce: true, websiteSourceUrl: isSafePublicUrl(candidate.websiteSourceUrl) ? normalizeUrl(candidate.websiteSourceUrl) : website, emailSourceUrl: normalizeUrl(candidate.emailSourceUrl), phoneSourceUrl: isSafePublicUrl(candidate.phoneSourceUrl) ? normalizeUrl(candidate.phoneSourceUrl) : null, discoverySource: 'gemini_google_search' };
+  return { businessName: candidate.businessName.trim().slice(0, 200), domain, website, email, phone: normalizePhone(candidate.phone), category: input.category, location: input.location, keywords: input.keywords, isEcommerce: true, websiteSourceUrl: isSafePublicUrl(candidate.websiteSourceUrl) ? normalizeUrl(candidate.websiteSourceUrl) : website, emailSourceUrl: normalizeUrl(candidate.emailSourceUrl), phoneSourceUrl: isSafePublicUrl(candidate.phoneSourceUrl) ? normalizeUrl(candidate.phoneSourceUrl) : null, discoverySource: 'gemini_google_search' };
 }
 
 export async function runDiscovery(jobId) {
