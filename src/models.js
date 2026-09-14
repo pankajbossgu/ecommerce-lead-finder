@@ -31,6 +31,7 @@ const leadSchema = new mongoose.Schema({
   websiteSourceUrl: { type: String, default: null }, emailSourceUrl: { type: String, default: null }, phoneSourceUrl: { type: String, default: null }, discoverySource: { type: String, default: 'gemini_google_search' }, discoveredAt: { type: Date, default: Date.now, index: true }
 }, { timestamps: true, versionKey: false });
 leadSchema.index({ domain: 1, status: 1 }, { unique: true, partialFilterExpression: { status: { $in: ['saved', 'discarded'] } }, name: 'resolved_domain_unique' });
+leadSchema.index({ searchJobId: 1, domain: 1 }, { unique: true, partialFilterExpression: { searchJobId: { $type: 'objectId' } }, name: 'job_domain_unique' });
 leadSchema.index({ searchJobId: 1, status: 1, discoveredAt: -1 });
 leadSchema.index({ email: 1 });
 
@@ -38,7 +39,11 @@ const jobSchema = new mongoose.Schema({
   category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number,
   status: { type: String, enum: ['queued', 'running', 'completed', 'failed', 'cancelled'], default: 'queued', index: true }, openLock: { type: String, default: 'discovery' },
   foundCount: { type: Number, default: 0 }, duplicateCount: { type: Number, default: 0 }, rejectedCount: { type: Number, default: 0 },
-  attempts: { type: Number, default: 0 }, checkpoint: { type: Number, default: 0 }, workerToken: { type: String, default: null }, workerLeaseExpiresAt: { type: Date, default: null },
+  attempts: { type: Number, default: 0 },
+  // Persist the model response and cursor so a serverless retry resumes the
+  // exact variation/candidate rather than regenerating a batch.
+  checkpoint: { variationIndex: { type: Number, default: 0 }, candidateIndex: { type: Number, default: 0 }, batchId: { type: String, default: null }, candidates: { type: [mongoose.Schema.Types.Mixed], default: [] } },
+  workerToken: { type: String, default: null }, workerLeaseExpiresAt: { type: Date, default: null },
   startedAt: { type: Date, default: null }, completedAt: { type: Date, default: null }, errorMessage: { type: String, default: null }
 }, { timestamps: true, versionKey: false });
 jobSchema.index({ createdAt: -1 }); jobSchema.index({ status: 1, workerLeaseExpiresAt: 1 }); jobSchema.index({ openLock: 1 }, { unique: true, partialFilterExpression: { status: { $in: ['queued', 'running'] } }, name: 'one_active_discovery_job' });

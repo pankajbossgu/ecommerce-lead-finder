@@ -91,6 +91,9 @@ app.post('/api/discovery/jobs/:id/cancel', async (req, res) => {
   objectId(req.params.id, 'Job');
   const job = await SearchJob.findOneAndUpdate({ _id: req.params.id, status: { $in: ['queued', 'running'] } }, { $set: { status: 'cancelled', completedAt: new Date(), workerToken: null, workerLeaseExpiresAt: null } }, { new: true });
   if (!job) throw new AppError('Job cannot be cancelled', 409, 'JOB_NOT_CANCELLABLE');
+  // Cancelled discovery is not an unresolved result set. Clearing its new rows
+  // also means cancellation cannot hold the one-job lock after a refresh.
+  await Lead.deleteMany({ searchJobId: job._id, status: 'new' });
   res.json({ jobId: job.id, status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, completedAt: job.completedAt });
 });
 app.get('/api/leads', async (req, res) => {
@@ -103,7 +106,7 @@ app.get('/api/leads', async (req, res) => {
     filter.$or = [{ businessName: { $regex: term, $options: 'i' } }, { domain: { $regex: term, $options: 'i' } }, { email: { $regex: term, $options: 'i' } }];
   }
   const [items, total] = await Promise.all([Lead.find(filter).sort({ discoveredAt: -1 }).skip((page - 1) * limit).limit(limit).lean(), Lead.countDocuments(filter)]);
-  res.json({ items, pagination: pagination(page, limit, total) });
+  res.json({ items: items.map((item, index) => ({ ...item, srNo: (page - 1) * limit + index + 1 })), pagination: pagination(page, limit, total) });
 });
 app.get('/api/leads/:id', async (req, res) => {
   objectId(req.params.id, 'Lead');

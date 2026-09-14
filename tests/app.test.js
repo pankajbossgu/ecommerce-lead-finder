@@ -81,3 +81,23 @@ test('current-job result filter keeps a job scoped and bulk lifecycle statuses a
   for (const status of ['saved', 'discarded', 'new']) assert.doesNotThrow(() => assertLeadStatus(status));
   assert.throws(() => assertLeadStatus('delete'));
 });
+
+import fs from 'node:fs';
+
+test('regression contracts: durable checkpoint, scoped cap, cancellation cleanup, and lead list controls', () => {
+  const services = fs.readFileSync(new URL('../src/services.js', import.meta.url), 'utf8');
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(services, /batchId.*candidates/); // exact batch + cursor persist together
+  assert.match(services, /foundCount: \{ \$lt: job\.requestedCount \}/); // no more than requested results
+  assert.match(services, /checkpoint\.candidateIndex/);
+  assert.match(app, /Lead\.deleteMany\(\{ searchJobId: job\._id, status: 'new' \}\)/);
+  assert.match(app, /srNo: \(page - 1\) \* limit \+ index \+ 1/);
+  assert.match(client, /id="select-all"/);
+  assert.match(html, /data-bulk="saved"/);
+  assert.match(html, /data-bulk="discarded"/);
+  assert.match(html, /data-bulk="delete"/);
+  assert.match(client, /Ready for future outreach/);
+  assert.match(client, /state\.jobId = null; state\.selected\.clear\(\)/);
+});

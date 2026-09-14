@@ -9,28 +9,62 @@ function prepareLead(candidate, input) { const website = normalizeUrl(candidate?
 export const activeJobFilter = (jobId, token) => ({ _id: jobId, status: 'running', workerToken: token }); export const isTerminalJobStatus = status => ['completed', 'failed', 'cancelled'].includes(status); export const resolvedDuplicateFilter = domain => ({ domain, status: { $in: ['saved', 'discarded'] } });
 export async function runDiscovery(jobId) {
   const now = new Date(), token = crypto.randomUUID();
-  const job = await SearchJob.findOneAndUpdate({ _id: jobId, status: { $in: ['queued', 'running'] }, $or: [{ workerLeaseExpiresAt: null }, { workerLeaseExpiresAt: { $lte: now } }] }, { $set: { status: 'running', workerToken: token, workerLeaseExpiresAt: new Date(now.getTime() + 55_000), startedAt: now }, $inc: { attempts: 1 } }, { new: true }).lean();
+  const job = await SearchJob.findOneAndUpdate({ _id: jobId, status: { $in: ['queued', 'running'] }, $or: [{ workerLeaseExpiresAt: null }, { workerLeaseExpiresAt: { $lte: now } }] }, { $set: { status: 'running', workerToken: token, workerLeaseExpiresAt: new Date(now.getTime() + 55_000), startedAt: now } }, { new: true }).lean();
   if (!job) return;
-  // Reconcile a write that completed just before a serverless request ended, before
-  // its counter checkpoint could be acknowledged.
+  // Reconcile only this job's persisted results. This also makes an interrupted
+  // write safe without ever mixing older unresolved leads into this result set.
   const persistedFound = await Lead.countDocuments({ searchJobId: jobId });
   if (persistedFound > job.foundCount) await SearchJob.updateOne(activeJobFilter(jobId, token), { $set: { foundCount: persistedFound } });
   job.foundCount = Math.max(job.foundCount, persistedFound);
   try {
-    if (job.foundCount < job.requestedCount && job.attempts <= env.discoveryMaxAttempts) {
-      const candidates = await discoverWithGemini(job, variations(job)[(job.attempts - 1) % variations(job).length]);
-      for (const candidate of candidates) {
-        const current = await SearchJob.findOne(activeJobFilter(jobId, token)).lean();
-        if (!current || current.foundCount >= current.requestedCount) break;
-        const lead = prepareLead(candidate, job);
-        if (!lead) { await SearchJob.updateOne(activeJobFilter(jobId, token), { $inc: { rejectedCount: 1, checkpoint: 1 } }); continue; }
-        if (await Lead.exists({ $or: [resolvedDuplicateFilter(lead.domain), { searchJobId: jobId, domain: lead.domain }] })) { await SearchJob.updateOne(activeJobFilter(jobId, token), { $inc: { duplicateCount: 1, checkpoint: 1 } }); continue; }
-        try { await Lead.create({ ...lead, searchJobId: jobId }); await SearchJob.updateOne(activeJobFilter(jobId, token), { $inc: { foundCount: 1, checkpoint: 1 } }); } catch (error) { if (error?.code === 11000) await SearchJob.updateOne(activeJobFilter(jobId, token), { $inc: { duplicateCount: 1, checkpoint: 1 } }); else throw error; }
+    let checkpoint = job.checkpoint && typeof job.checkpoint === 'object' ? job.checkpoint : { variationIndex: 0, candidateIndex: 0, candidates: [] };
+    // Old numeric checkpoints cannot identify a model response; deliberately
+    // start one fresh persisted variation once during the schema migration.
+    if (!Array.isArray(checkpoint.candidates) || !checkpoint.candidates.length) {
+      if (job.attempts >= env.discoveryMaxAttempts) checkpoint = { ...checkpoint, candidates: [] };
+      else {
+        const variationIndex = Number(checkpoint.variationIndex) || 0;
+        const candidates = await discoverWithGemini(job, variations(job)[variationIndex % variations(job).length]);
+        const saved = await SearchJob.findOneAndUpdate(activeJobFilter(jobId, token), { $set: { checkpoint: { variationIndex, candidateIndex: 0, batchId: crypto.randomUUID(), candidates } }, $inc: { attempts: 1 } }, { new: true }).lean();
+        if (!saved) return;
+        job.attempts = saved.attempts; checkpoint = saved.checkpoint;
       }
     }
+    // Advance the durable cursor after every candidate. Retried invocations use
+    // this saved response and resume at candidateIndex, never batch zero.
+    while (job.foundCount < job.requestedCount && checkpoint.candidateIndex < checkpoint.candidates.length) {
+      const candidate = checkpoint.candidates[checkpoint.candidateIndex];
+      const lead = prepareLead(candidate, job);
+      let update = { $inc: { 'checkpoint.candidateIndex': 1 } };
+      if (!lead) update.$inc.rejectedCount = 1;
+      else if (await Lead.exists({ $or: [resolvedDuplicateFilter(lead.domain), { searchJobId: jobId, domain: lead.domain }] })) update.$inc.duplicateCount = 1;
+      else {
+        // Reserve a slot atomically before the insert. A second worker/retry
+        // cannot exceed requestedCount even if a lease is reclaimed.
+        const reserved = await SearchJob.findOneAndUpdate({ ...activeJobFilter(jobId, token), foundCount: { $lt: job.requestedCount }, 'checkpoint.candidateIndex': checkpoint.candidateIndex }, { $inc: { foundCount: 1, 'checkpoint.candidateIndex': 1 } }, { new: true }).lean();
+        if (!reserved) break;
+        try { await Lead.create({ ...lead, searchJobId: jobId }); job.foundCount = reserved.foundCount; checkpoint = reserved.checkpoint; continue; }
+        catch (error) {
+          // Roll back the reservation only while this worker still owns an active job.
+          await SearchJob.updateOne(activeJobFilter(jobId, token), { $inc: { foundCount: -1, duplicateCount: error?.code === 11000 ? 1 : 0 } });
+          if (error?.code !== 11000) throw error;
+          job.foundCount = Math.max(0, reserved.foundCount - 1); checkpoint = reserved.checkpoint; continue;
+        }
+      }
+      const advanced = await SearchJob.findOneAndUpdate({ ...activeJobFilter(jobId, token), 'checkpoint.candidateIndex': checkpoint.candidateIndex }, update, { new: true }).lean();
+      if (!advanced) break;
+      checkpoint = advanced.checkpoint; job.foundCount = advanced.foundCount;
+    }
     const fresh = await SearchJob.findOne(activeJobFilter(jobId, token)).lean(); if (!fresh) return;
-    const complete = fresh.foundCount >= fresh.requestedCount || fresh.attempts >= env.discoveryMaxAttempts;
-    if (!complete) { await SearchJob.updateOne(activeJobFilter(jobId, token), { $set: { workerToken: null, workerLeaseExpiresAt: null } }); return; }
+    const batchFinished = fresh.checkpoint.candidateIndex >= fresh.checkpoint.candidates.length;
+    const complete = fresh.foundCount >= fresh.requestedCount || (batchFinished && fresh.attempts >= env.discoveryMaxAttempts);
+    if (!complete) {
+      // Mark a completed variation before releasing the lease. The next poll
+      // generates only the next variation, retaining this job's exact history.
+      if (batchFinished) await SearchJob.updateOne(activeJobFilter(jobId, token), { $set: { checkpoint: { variationIndex: fresh.checkpoint.variationIndex + 1, candidateIndex: 0, batchId: null, candidates: [] }, workerToken: null, workerLeaseExpiresAt: null } });
+      else await SearchJob.updateOne(activeJobFilter(jobId, token), { $set: { workerToken: null, workerLeaseExpiresAt: null } });
+      return;
+    }
     const result = await SearchJob.updateOne(activeJobFilter(jobId, token), { $set: { status: 'completed', completedAt: new Date(), workerToken: null, workerLeaseExpiresAt: null } });
     if (result.modifiedCount) await SearchHistory.create({ category: fresh.category, location: fresh.location, keywords: fresh.keywords, requestedCount: fresh.requestedCount, foundCount: fresh.foundCount });
   } catch (error) { logger.error('Discovery job failed', jobId, error.message); await SearchJob.updateOne(activeJobFilter(jobId, token), { $set: { status: 'failed', errorMessage: error instanceof AppError ? error.message : 'Lead discovery is temporarily unavailable. Please try again.', completedAt: new Date(), workerToken: null, workerLeaseExpiresAt: null } }); }
