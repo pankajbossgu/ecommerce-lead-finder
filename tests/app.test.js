@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { corsOptionsForRequest, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview } from '../src/app.js';
+import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline } from '../src/app.js';
 import { activeJobFilter, isTerminalJobStatus } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeDomain, normalizeEmail, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 
@@ -217,4 +217,46 @@ test('outreach regression contracts include recipient failures, activity history
 test('workspace DOM contracts cover compact cards, filter surface, and campaign metrics', () => {
   const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'); const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
   assert.match(html, /id="saved-filter-panel"/); assert.match(html, /role="tab"/); assert.match(client, /lead-card-list/); assert.match(client, /try \{ const result = await api/); assert.match(client, /<details>/); assert.match(client, /campaign-metrics/); assert.match(client, /Batch failed/);
+});
+
+test('campaign deletion removes only campaign recipients and preserves activity history', async () => {
+  const campaign = { _id: '507f1f77bcf86cd799439011', status: 'completed' };
+  const deletedRecipients = []; const activities = [{ campaignId: campaign._id, status: 'sent' }];
+  const campaignModel = {
+    findById: () => ({ lean: async () => campaign }),
+    findOneAndDelete: filter => filter.status.$ne === 'sending' ? { lean: async () => campaign } : { lean: async () => null }
+  };
+  const recipientModel = { deleteMany: async filter => { deletedRecipients.push(filter); return { deletedCount: 1 }; } };
+  const result = await deleteCampaign(campaignModel, recipientModel, campaign._id);
+  assert.equal(result._id, campaign._id);
+  assert.deepEqual(deletedRecipients, [{ campaignId: campaign._id }]);
+  assert.equal(activities.length, 1, 'outreach history is never passed to campaign deletion');
+});
+
+test('sending campaigns cannot be deleted', async () => {
+  const campaign = { _id: '507f1f77bcf86cd799439011', status: 'sending' };
+  const campaignModel = { findById: () => ({ lean: async () => campaign }) };
+  await assert.rejects(deleteCampaign(campaignModel, { deleteMany: async () => assert.fail('must not delete recipients') }, campaign._id), error => error.status === 409 && error.code === 'CAMPAIGN_SENDING');
+});
+
+test('management history pipeline derives latest independent channel statuses from OutreachActivity', () => {
+  const pipeline = managementPipeline({ status: 'saved', tab: 'contacted', communicationStatus: 'failed' });
+  const source = JSON.stringify(pipeline);
+  assert.match(source, /outreachactivities/);
+  assert.match(source, /activityAt/);
+  assert.match(source, /emailStatus/); assert.match(source, /whatsappStatus/);
+  assert.match(source, /manual_sent/); assert.match(source, /failed/);
+  assert.match(source, /lastContacted/);
+});
+
+test('campaign deletion and mobile status UI contracts preserve historical states', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/css/styles.css', import.meta.url), 'utf8');
+  assert.match(app, /app\.delete\('\/api\/campaigns\/:id'/);
+  assert.match(app, /recipientModel\.deleteMany/); assert.doesNotMatch(app.match(/export async function deleteCampaign[\s\S]*?return deleted;/)?.[0] || '', /OutreachActivity\.delete/);
+  assert.match(app, /Deleted campaign/);
+  assert.match(client, /data-delete-campaign/); assert.match(client, /Delete this campaign\?/); assert.match(client, /Existing email and WhatsApp outreach history/);
+  assert.match(client, /status-sent/); assert.match(client, /status-not-sent/); assert.match(client, /status-failed/);
+  assert.match(css, /\.lead-tabs \{ display:flex; flex-wrap:nowrap/); assert.match(css, /flex:0 0 auto/); assert.match(css, /\.lead-statuses \{ display:flex; flex-wrap:wrap; gap:6px/);
 });

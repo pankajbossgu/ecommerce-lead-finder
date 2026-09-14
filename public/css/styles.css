@@ -280,3 +280,15 @@ textarea { width:100%; min-height:90px; padding:10px 12px; border:1px solid var(
 @media(max-width:760px){.management-topbar{display:grid}.management-search{display:grid;grid-template-columns:1fr auto auto;margin-top:0}.management-search .toolbar-search{min-width:0;grid-column:1/-1}.desktop-export,.management-desktop,.recipient-desktop{display:none}.management-mobile,.recipient-mobile{display:block}.lead-card-list,.recipient-mobile{display:grid;gap:9px}.lead-card{padding:12px;border:1px solid var(--line);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm)}.lead-card-head{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start}.lead-card-head b,.lead-card small{display:block}.lead-card-summary{display:grid;gap:3px;margin:9px 0;color:var(--muted);font-size:12px}.lead-card details summary{color:var(--brand-dark);font-size:13px;font-weight:800;cursor:pointer}.lead-card-details{display:grid;gap:8px;margin-top:9px;padding-top:9px;border-top:1px solid var(--line);font-size:13px}.saved-filter-panel{position:fixed;right:0;bottom:0;left:0;max-height:85vh;overflow:auto;border-radius:18px 18px 0 0;box-shadow:0 -10px 32px rgba(10,40,30,.2)}.filter-fields{grid-template-columns:1fr 1fr}.filter-actions{position:sticky;bottom:-16px;margin:14px -16px -16px;padding:12px 16px;background:var(--surface)}.filter-actions .button{flex:1}.mobile-export{display:inline-flex}.campaign-list{grid-template-columns:1fr}.campaign-card{padding:16px}.campaign-card header .button{min-height:42px}.campaign-metrics{grid-template-columns:1fr 1fr}.campaign-metrics span{min-height:58px}.campaign-card h2{max-width:180px}.campaign-detail-panel .campaign-metrics{margin-top:12px}#saved-selection{position:sticky;top:auto;bottom:0;margin:12px 0 0}.lead-tabs{margin:0}.lead-tabs::after{display:none} }
 .recipient-card-details { display: grid; gap: 9px; }
 .recipient-card-details .actions { margin-top: 2px; }
+/* Historical communication states remain legible without relying on colour alone. */
+.outreach-status.status-sent { background:#dff1e9; color:#146247; }
+.outreach-status.status-not-sent { background:#fff5d9; color:#765600; }
+.outreach-status.status-failed { background:#fff0ed; color:#a54036; }
+.campaign-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+@media (max-width:760px) {
+  .lead-tabs { display:flex; flex-wrap:nowrap; gap:8px; padding:6px; overflow-x:auto; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; }
+  .lead-tabs button { flex:0 0 auto; min-width:max-content; }
+  .lead-tabs button:focus-visible { outline:2px solid var(--brand-dark); outline-offset:2px; }
+  .lead-statuses { display:flex; flex-wrap:wrap; gap:6px; }
+  .lead-statuses .outreach-status { margin:0; }
+}
