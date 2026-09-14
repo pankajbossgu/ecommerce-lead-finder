@@ -99,14 +99,24 @@ function manualLeadInput(body) {
   if (!email && !phone) throw new AppError('Add an email address or phone number', 400, 'VALIDATION_ERROR');
   return { businessName, website, domain, email, phone, category: cleanText(body?.category, 'Category', 100), location: cleanText(body?.location, 'Location', 100), notes: cleanText(body?.notes, 'Notes', 2000, false) || '', status: 'saved', savedAt: new Date(), searchJobId: null, discoverySource: 'manual', isEcommerce: true };
 }
-function managementPipeline(query) {
+export function managementPipeline(query) {
   const base = leadFilter({ ...query, status: 'saved' }, { allowJob: false });
-  const pipeline = [{ $match: base }, { $lookup: { from: 'campaignrecipients', localField: '_id', foreignField: 'leadId', as: 'recipients' } }, { $lookup: { from: 'outreachactivities', localField: '_id', foreignField: 'leadId', as: 'activities' } }, { $lookup: { from: 'campaigns', localField: 'recipients.campaignId', foreignField: '_id', as: 'campaigns' } }];
-  pipeline.push({ $addFields: { emailRecipient: { $arrayElemAt: [{ $filter: { input: '$recipients', as: 'r', cond: { $eq: ['$$r.channel', 'email'] } } }, 0] }, whatsappRecipient: { $arrayElemAt: [{ $filter: { input: '$recipients', as: 'r', cond: { $eq: ['$$r.channel', 'whatsapp'] } } }, 0] }, lastContacted: { $max: { $map: { input: { $filter: { input: '$activities', as: 'a', cond: { $in: ['$$a.status', ['sent', 'manual_sent']] } } }, as: 'a', in: '$$a.sentAt' } } } } });
+  const latestActivity = channel => ({ $lookup: { from: 'outreachactivities', let: { leadId: '$_id' }, pipeline: [{ $match: { $expr: { $and: [{ $eq: ['$leadId', '$$leadId'] }, { $eq: ['$channel', channel] }] } } }, { $addFields: { activityAt: { $ifNull: ['$sentAt', '$createdAt'] } } }, { $sort: { activityAt: -1, createdAt: -1, _id: -1 } }, { $limit: 1 }], as: `${channel}Activities` } });
+  const pipeline = [{ $match: base }, { $lookup: { from: 'campaignrecipients', localField: '_id', foreignField: 'leadId', as: 'recipients' } }, latestActivity('email'), latestActivity('whatsapp'), { $lookup: { from: 'outreachactivities', localField: '_id', foreignField: 'leadId', as: 'activities' } }, { $lookup: { from: 'campaigns', localField: 'recipients.campaignId', foreignField: '_id', as: 'campaigns' } }];
+  pipeline.push({ $addFields: {
+    emailActivity: { $arrayElemAt: ['$emailActivities', 0] }, whatsappActivity: { $arrayElemAt: ['$whatsappActivities', 0] },
+    emailActiveRecipient: { $gt: [{ $size: { $filter: { input: '$recipients', as: 'r', cond: { $and: [{ $eq: ['$$r.channel', 'email'] }, { $in: ['$$r.status', ['pending', 'ready', 'sending']] }] } } } }, 0] },
+    whatsappActiveRecipient: { $gt: [{ $size: { $filter: { input: '$recipients', as: 'r', cond: { $and: [{ $eq: ['$$r.channel', 'whatsapp'] }, { $in: ['$$r.status', ['pending', 'ready', 'sending']] }] } } } }, 0] },
+    lastContacted: { $max: { $map: { input: { $filter: { input: '$activities', as: 'a', cond: { $in: ['$$a.status', ['sent', 'manual_sent']] } } }, as: 'a', in: { $ifNull: ['$$a.sentAt', '$$a.createdAt'] } } } }
+  } });
+  pipeline.push({ $addFields: {
+    emailStatus: { $switch: { branches: [{ case: { $in: ['$emailActivity.status', ['sent', 'manual_sent']] }, then: 'sent' }, { case: { $eq: ['$emailActivity.status', 'failed'] }, then: 'failed' }], default: 'not_sent' } },
+    whatsappStatus: { $switch: { branches: [{ case: { $in: ['$whatsappActivity.status', ['sent', 'manual_sent']] }, then: 'sent' }, { case: { $eq: ['$whatsappActivity.status', 'failed'] }, then: 'failed' }], default: 'not_sent' } }
+  } });
   const tab = query.tab || 'all'; if (!['all', 'uncontacted', 'email', 'whatsapp', 'contacted'].includes(tab)) throw new AppError('Invalid lead management tab', 400, 'VALIDATION_ERROR');
   const conditions = []; if (tab === 'email') conditions.push({ email: { $ne: null } }); if (tab === 'whatsapp') conditions.push({ phone: { $ne: null } }); if (tab === 'contacted') conditions.push({ lastContacted: { $ne: null } }); if (tab === 'uncontacted') conditions.push({ lastContacted: null });
   if (query.channel === 'email') conditions.push({ email: { $ne: null } }); else if (query.channel === 'whatsapp') conditions.push({ phone: { $ne: null } }); else if (query.channel && query.channel !== 'all') throw new AppError('Invalid channel filter', 400, 'VALIDATION_ERROR');
-  const communicationStatus = query.communicationStatus; if (communicationStatus && communicationStatus !== 'all') { const map = { sent: ['sent', 'manual_sent'], failed: ['failed'], pending: ['pending', 'ready', 'sending'], skipped: ['skipped'], not_sent: [null] }; if (!map[communicationStatus]) throw new AppError('Invalid communication status', 400, 'VALIDATION_ERROR'); conditions.push({ $or: [{ 'emailRecipient.status': { $in: map[communicationStatus] } }, { 'whatsappRecipient.status': { $in: map[communicationStatus] } }] }); }
+  const communicationStatus = query.communicationStatus; if (communicationStatus && communicationStatus !== 'all') { if (!['sent', 'failed', 'pending', 'skipped', 'not_sent'].includes(communicationStatus)) throw new AppError('Invalid communication status', 400, 'VALIDATION_ERROR'); const field = communicationStatus === 'pending' ? [{ emailActiveRecipient: true }, { whatsappActiveRecipient: true }] : communicationStatus === 'skipped' ? [{ 'emailActivity.status': 'skipped' }, { 'whatsappActivity.status': 'skipped' }] : [{ emailStatus: communicationStatus === 'not_sent' ? 'not_sent' : communicationStatus }, { whatsappStatus: communicationStatus === 'not_sent' ? 'not_sent' : communicationStatus }]; conditions.push({ $or: field }); }
   if (query.campaign) { objectId(query.campaign, 'Campaign'); conditions.push({ 'recipients.campaignId': new mongoose.Types.ObjectId(query.campaign) }); }
   if (conditions.length) pipeline.push({ $match: conditions.length === 1 ? conditions[0] : { $and: conditions } });
   return pipeline;
@@ -249,6 +259,19 @@ async function updateCampaignCounts(campaignId) {
   return { ...c, businessCount: c.businesses.length, processed };
 }
 async function requireCampaign(id) { objectId(id, 'Campaign'); const campaign = await Campaign.findById(id).lean(); if (!campaign) throw new AppError('Campaign not found', 404, 'NOT_FOUND'); return campaign; }
+export async function deleteCampaign(campaignModel, recipientModel, id) {
+  objectId(id, 'Campaign');
+  const campaign = await campaignModel.findById(id).lean();
+  if (!campaign) throw new AppError('Campaign not found', 404, 'NOT_FOUND');
+  if (campaign.status === 'sending') throw new AppError('Campaign cannot be deleted while it is sending.', 409, 'CAMPAIGN_SENDING');
+  // The conditional delete is the final state check, preventing a send that
+  // started after the initial read from being removed as a completed campaign.
+  const deleted = await campaignModel.findOneAndDelete({ _id: id, status: { $ne: 'sending' } }).lean();
+  if (!deleted) throw new AppError('Campaign cannot be deleted while it is sending.', 409, 'CAMPAIGN_SENDING');
+  await recipientModel.deleteMany({ campaignId: deleted._id });
+  // OutreachActivity is intentionally not touched: it is permanent lead history.
+  return deleted;
+}
 async function recipientFor(campaignId, recipientId) { objectId(recipientId, 'Campaign recipient'); const recipient = await CampaignRecipient.findOne({ _id: recipientId, campaignId }).lean(); if (!recipient) throw new AppError('Campaign recipient not found', 404, 'NOT_FOUND'); return recipient; }
 app.get('/api/templates', async (_req, res) => res.json({ items: await OutreachTemplate.find({}).sort({ updatedAt: -1 }).lean() }));
 app.post('/api/templates', async (req, res) => res.status(201).json(await OutreachTemplate.create(templateInput(req.body))));
@@ -259,6 +282,10 @@ app.get('/api/campaigns', async (_req, res) => res.json({ items: await Campaign.
 app.post('/api/campaigns', async (req, res) => { const channels = [...new Set(req.body?.channels || [])]; if (!channels.length || !channels.every(channel => ['email', 'whatsapp'].includes(channel))) throw new AppError('Choose at least one campaign channel', 400, 'VALIDATION_ERROR'); const payload = { name: cleanText(req.body?.name, 'Campaign name', 120), channels, status: 'draft', emailTemplateId: null, whatsappTemplateId: null }; for (const channel of channels) { const key = channel === 'email' ? 'emailTemplateId' : 'whatsappTemplateId'; if (!mongoose.isValidObjectId(req.body?.[key])) throw new AppError(`A valid ${channel} template is required`, 400, 'VALIDATION_ERROR'); const template = await OutreachTemplate.findOne({ _id: req.body[key], type: channel }).lean(); if (!template) throw new AppError(`Selected ${channel} template was not found`, 400, 'VALIDATION_ERROR'); payload[key] = template._id; } res.status(201).json(await Campaign.create(payload)); });
 app.get('/api/campaigns/:id', async (req, res) => res.json(await requireCampaign(req.params.id)));
 app.patch('/api/campaigns/:id', async (req, res) => { const campaign = await requireCampaign(req.params.id); if (!['draft', 'ready', 'paused'].includes(campaign.status)) throw new AppError('Only draft, ready, or paused campaigns can be changed', 409, 'CAMPAIGN_LOCKED'); const name = req.body?.name === undefined ? campaign.name : cleanText(req.body.name, 'Campaign name', 120); const status = req.body?.status === undefined ? campaign.status : req.body.status; if (!['draft', 'ready', 'paused'].includes(status)) throw new AppError('Invalid campaign status', 400, 'VALIDATION_ERROR'); res.json(await Campaign.findByIdAndUpdate(campaign._id, { $set: { name, status } }, { new: true }).lean()); });
+app.delete('/api/campaigns/:id', async (req, res) => {
+  const campaign = await deleteCampaign(Campaign, CampaignRecipient, req.params.id);
+  res.json({ deletedId: String(campaign._id) });
+});
 function selectedLeadPipeline(body) {
   if (body?.selectAllMatching === true) return managementPipeline({ status: 'saved', search: body.search, from: body.from, to: body.to, tab: body.tab, channel: body.channel, communicationStatus: body.communicationStatus, campaign: body.campaign });
   const ids = Array.isArray(body?.leadIds) ? [...new Set(body.leadIds)] : [];
@@ -321,7 +348,7 @@ app.post('/api/campaigns/:id/retry-failed', sendRateLimit, async (req, res) => {
 app.post('/api/campaigns/:id/recipients/:recipientId/manual-sent', async (req, res) => { const recipient = await recipientFor(req.params.id, req.params.recipientId); if (recipient.channel !== 'whatsapp') throw new AppError('Only WhatsApp recipients can be marked manually sent', 409, 'VALIDATION_ERROR'); const updated = await CampaignRecipient.findOneAndUpdate({ _id: recipient._id, status: { $in: ['ready', 'pending'] } }, { $set: { status: 'manual_sent', sentAt: new Date() } }, { new: true }).lean(); if (updated) await OutreachActivity.create({ leadId: updated.leadId, campaignId: updated.campaignId, channel: 'whatsapp', templateId: updated.templateId, recipient: updated.recipient, status: 'manual_sent', sentAt: updated.sentAt }); res.json({ recipient: updated || recipient, counts: await updateCampaignCounts(req.params.id) }); });
 app.post('/api/campaigns/:id/recipients/:recipientId/skip', async (req, res) => { const recipient = await recipientFor(req.params.id, req.params.recipientId); const updated = await CampaignRecipient.findOneAndUpdate({ _id: recipient._id, status: { $in: ['ready', 'pending'] } }, { $set: { status: 'skipped' } }, { new: true }).lean(); if (updated) await OutreachActivity.create({ leadId: updated.leadId, campaignId: updated.campaignId, channel: updated.channel, templateId: updated.templateId, recipient: updated.recipient, status: 'skipped' }); res.json({ recipient: updated || recipient, counts: await updateCampaignCounts(req.params.id) }); });
 app.get('/api/campaigns/:id/recipients/:recipientId/whatsapp-message', async (req, res) => { const recipient = await recipientFor(req.params.id, req.params.recipientId); if (recipient.channel !== 'whatsapp') throw new AppError('Only WhatsApp recipients have a WhatsApp message', 409, 'VALIDATION_ERROR'); const [lead, template] = await Promise.all([Lead.findById(recipient.leadId).lean(), OutreachTemplate.findOne({ _id: recipient.templateId, type: 'whatsapp' }).lean()]); if (!lead || !template) throw new AppError('WhatsApp message is unavailable', 409, 'MESSAGE_UNAVAILABLE'); res.json({ message: renderTemplate(template.body, lead) }); });
-app.get('/api/leads/:id/outreach', async (req, res) => { objectId(req.params.id, 'Lead'); const items = await OutreachActivity.find({ leadId: req.params.id }).populate('campaignId', 'name').populate('templateId', 'name').sort({ sentAt: -1, createdAt: -1 }).lean(); res.json({ items }); });
+app.get('/api/leads/:id/outreach', async (req, res) => { objectId(req.params.id, 'Lead'); const items = await OutreachActivity.find({ leadId: req.params.id }).populate('campaignId', 'name').populate('templateId', 'name').sort({ sentAt: -1, createdAt: -1 }).lean(); res.json({ items: items.map(item => ({ ...item, campaignId: item.campaignId || { _id: item.campaignId, name: 'Deleted campaign' } })) }); });
 app.get('/api/campaigns/:id/activity', async (req, res) => { await requireCampaign(req.params.id); res.json({ items: await OutreachActivity.find({ campaignId: req.params.id }).sort({ createdAt: -1 }).lean() }); });
 app.get('/api/health', (_req, res) => {
   const connected = mongoose.connection.readyState === 1;
