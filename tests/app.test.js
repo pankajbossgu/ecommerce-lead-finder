@@ -333,3 +333,14 @@ test('campaign deletion and mobile status UI contracts preserve historical state
   assert.match(client, /status-sent/); assert.match(client, /status-not-sent/); assert.match(client, /status-failed/);
   assert.match(css, /\.lead-tabs \{ display:flex; flex-wrap:nowrap/); assert.match(css, /flex:0 0 auto/); assert.match(css, /\.lead-statuses \{ display:flex; flex-wrap:wrap; gap:6px/);
 });
+
+test('saved lead management pagination is capped at 20 and preserves filtered page navigation', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(app, /const managementLimit = Math\.min\(limit, 20\)/);
+  assert.match(app, /\$skip: \(page - 1\) \* managementLimit/);
+  assert.match(client, /limit: 20/);
+  assert.match(client, /Showing \$\{first\}–\$\{last\} of \$\{total\}/);
+  assert.match(client, /data-lead-page/);
+  assert.match(client, /state\.pages\.saved = 1/);
+});

@@ -178,10 +178,11 @@ app.post('/api/discovery/jobs/:id/cancel', async (req, res) => {
 app.get('/api/leads', async (req, res) => {
   const { page, limit } = parsePagination(req.query);
   if (req.query.status === 'saved') {
+    const managementLimit = Math.min(limit, 20);
     const pipeline = managementPipeline(req.query);
-    const [result] = await Lead.aggregate([...pipeline, { $sort: { savedAt: -1, _id: -1 } }, { $facet: { items: [{ $skip: (page - 1) * limit }, { $limit: limit }], total: [{ $count: 'count' }] } }]);
+    const [result] = await Lead.aggregate([...pipeline, { $sort: { savedAt: -1, _id: -1 } }, { $facet: { items: [{ $skip: (page - 1) * managementLimit }, { $limit: managementLimit }], total: [{ $count: 'count' }] } }]);
     const total = result?.total?.[0]?.count || 0;
-    return res.json({ items: (result?.items || []).map((item, index) => ({ ...item, srNo: (page - 1) * limit + index + 1 })), pagination: pagination(page, limit, total) });
+    return res.json({ items: (result?.items || []).map((item, index) => ({ ...item, srNo: (page - 1) * managementLimit + index + 1 })), pagination: pagination(page, managementLimit, total) });
   }
   const filter = leadFilter(req.query); const sort = req.query.status === 'discarded' ? { notUsefulAt: -1, _id: -1 } : { discoveredAt: -1, _id: -1 };
   const [items, total] = await Promise.all([Lead.find(filter).sort(sort).skip((page - 1) * limit).limit(limit).lean(), Lead.countDocuments(filter)]);
