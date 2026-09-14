@@ -20,7 +20,8 @@
     "express-rate-limit": "^8.0.1",
     "helmet": "^8.1.0",
     "mongoose": "^8.16.1",
-    "@vercel/functions": "^2.2.12"
+    "@vercel/functions": "^2.2.12",
+    "resend": "^4.0.0"
   },
   "devDependencies": {
     "eslint": "^9.30.1",
