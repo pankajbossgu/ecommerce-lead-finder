@@ -28,10 +28,10 @@ const leadSchema = new mongoose.Schema({
   businessName: { type: String, required: true, trim: true, maxlength: 200 },
   // This is deliberately not globally unique: unresolved leads can be cleared and rediscovered.
   domain: { type: String, required: true, lowercase: true, trim: true },
-  website: { type: String, required: true }, email: { type: String, required: true, lowercase: true, trim: true }, phone: { type: String, default: null },
+  website: { type: String, required: true }, email: { type: String, default: null, lowercase: true, trim: true }, phone: { type: String, default: null },
   status: { type: String, enum: ['new', 'saved', 'discarded'], default: 'new', index: true },
   searchJobId: { type: mongoose.Schema.Types.ObjectId, ref: 'SearchJob', default: null, index: true },
-  category: { type: String, required: true }, location: { type: String, required: true }, keywords: { type: String, default: '' }, isEcommerce: { type: Boolean, required: true },
+  category: { type: String, required: true }, location: { type: String, required: true }, notes: { type: String, default: '', maxlength: 2000 }, keywords: { type: String, default: '' }, isEcommerce: { type: Boolean, required: true },
   websiteSourceUrl: { type: String, default: null }, emailSourceUrl: { type: String, default: null }, phoneSourceUrl: { type: String, default: null }, discoverySource: { type: String, default: 'gemini_google_search' }, discoveredAt: { type: Date, default: Date.now, index: true },
   // These are lifecycle timestamps, intentionally independent from discovery time.
   savedAt: { type: Date, default: null, index: true },
@@ -70,7 +70,7 @@ const campaignSchema = new mongoose.Schema({
   emailTemplateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', default: null }, whatsappTemplateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', default: null },
   status: { type: String, enum: ['draft', 'ready', 'sending', 'completed', 'paused', 'failed'], default: 'draft', index: true },
   recipientCount: { type: Number, default: 0 }, emailCount: { type: Number, default: 0 }, whatsappCount: { type: Number, default: 0 }, sentCount: { type: Number, default: 0 }, failedCount: { type: Number, default: 0 }, pendingCount: { type: Number, default: 0 },
-  businessCount: { type: Number, default: 0 }, emailSentCount: { type: Number, default: 0 }, emailFailedCount: { type: Number, default: 0 }, emailPendingCount: { type: Number, default: 0 }, whatsappSentCount: { type: Number, default: 0 }, processedCount: { type: Number, default: 0 }, currentBatch: { type: Number, default: 0 },
+  businessCount: { type: Number, default: 0 }, emailSentCount: { type: Number, default: 0 }, emailFailedCount: { type: Number, default: 0 }, emailPendingCount: { type: Number, default: 0 }, whatsappSentCount: { type: Number, default: 0 }, processedCount: { type: Number, default: 0 }, currentBatch: { type: Number, default: 0 }, currentBatchProcessed: { type: Number, default: 0 }, currentBatchSize: { type: Number, default: 0 }, whatsappPendingCount: { type: Number, default: 0 }, whatsappSkippedCount: { type: Number, default: 0 },
   startedAt: Date, completedAt: Date
 }, { timestamps: true, versionKey: false });
 campaignSchema.index({ status: 1, updatedAt: -1 });
