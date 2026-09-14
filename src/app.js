@@ -5,7 +5,6 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import mongoose from 'mongoose';
-import { waitUntil } from '@vercel/functions';
 import { connectDatabase, env, Lead, SearchHistory, SearchJob } from './models.js';
 import { runDiscovery } from './services.js';
 import { AppError, assertLeadStatus, logger, parseDiscoveryInput, parsePagination } from './utils.js';
@@ -63,19 +62,21 @@ app.use(express.json({ limit: '20kb', type: 'application/json' }));
 app.post('/api/discovery/jobs', discoveryRateLimit, async (req, res) => {
   const job = await SearchJob.create(parseDiscoveryInput(req.body));
   res.status(202).json({ jobId: job.id, status: job.status });
-  waitUntil(runDiscovery(job.id));
 });
 app.get('/api/discovery/jobs/:id', async (req, res) => {
   objectId(req.params.id, 'Job');
+  // Polling is also the durable job runner. This avoids relying on waitUntil or an
+  // in-memory process surviving a Vercel/serverless invocation.
+  await runDiscovery(req.params.id);
   const job = await SearchJob.findById(req.params.id).lean();
   if (!job) throw new AppError('Job not found', 404, 'NOT_FOUND');
   res.json({ jobId: String(job._id), status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, error: job.errorMessage, createdAt: job.createdAt, completedAt: job.completedAt });
 });
 app.post('/api/discovery/jobs/:id/cancel', async (req, res) => {
   objectId(req.params.id, 'Job');
-  const job = await SearchJob.findOneAndUpdate({ _id: req.params.id, status: { $in: ['queued', 'running'] } }, { $set: { status: 'cancelled', completedAt: new Date() } }, { new: true });
+  const job = await SearchJob.findOneAndUpdate({ _id: req.params.id, status: { $in: ['queued', 'running'] } }, { $set: { status: 'cancelled', completedAt: new Date(), workerToken: null, workerLeaseExpiresAt: null } }, { new: true });
   if (!job) throw new AppError('Job cannot be cancelled', 409, 'JOB_NOT_CANCELLABLE');
-  res.json({ jobId: job.id, status: job.status });
+  res.json({ jobId: job.id, status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, completedAt: job.completedAt });
 });
 app.get('/api/leads', async (req, res) => {
   const { page, limit } = parsePagination(req.query);
@@ -96,7 +97,7 @@ app.get('/api/leads/:id', async (req, res) => {
 });
 app.patch('/api/leads/:id/status', async (req, res) => {
   objectId(req.params.id, 'Lead');
-  const lead = await Lead.findByIdAndUpdate(req.params.id, { $set: { status: assertLeadStatus(req.body.status) } }, { new: true, runValidators: true }).lean();
+  const lead = await Lead.findByIdAndUpdate(req.params.id, { $set: { status: assertLeadStatus(req.body?.status) } }, { new: true, runValidators: true }).lean();
   if (!lead) throw new AppError('Lead not found', 404, 'NOT_FOUND');
   res.json(lead);
 });
@@ -121,7 +122,6 @@ app.use((error, _req, res, _next) => {
 async function startServer() {
   try {
     await connectDatabase();
-    await SearchJob.updateMany({ status: { $in: ['queued', 'running'] }, updatedAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) } }, { $set: { status: 'failed', errorMessage: 'Discovery did not complete. Please start a new search.', completedAt: new Date() } });
     app.listen(env.port, () => logger.info(`Server listening on port ${env.port}`));
   } catch {
     logger.error('Startup failed: database connection is unavailable.');
