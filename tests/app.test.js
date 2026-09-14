@@ -52,9 +52,10 @@ test('workflow API exposes durable current state, scoped mutations, and distinct
   const routes = await readFile(new URL('../src/routes.js', import.meta.url), 'utf8');
   const services = await readFile(new URL('../src/services.js', import.meta.url), 'utf8');
   assert.match(routes, /router\.get\('\/discovery\/current'/);
-  assert.match(routes, /const current = await currentDiscovery\(\);/);
-  assert.match(routes, /jobPayload\(current\.job, current\.pendingCount\)/);
-  assert.match(routes, /lastJob\?\.status === 'cancelled'/);
+  assert.match(routes, /const state = await DiscoveryState\.findById\('current'\)\.lean\(\);/);
+  assert.match(routes, /!\['queued', 'running'\]\.includes\(job\.status\)/);
+  assert.match(routes, /jobPayload\(job, pendingCount\)/);
+  assert.doesNotMatch(routes, /lastJob\?\.status === 'cancelled'/);
   assert.match(routes, /jobId: null, status: null/);
   assert.match(routes, /SEARCH_BLOCKED_ACTIVE_JOB/);
   assert.match(routes, /SEARCH_BLOCKED_PENDING_LEADS/);
@@ -82,4 +83,19 @@ test('frontend recovery and permanent-lead UI use the current-state and bulk API
   assert.match(app, /if \(state\.pollInFlight\?\.jobId === jobId && state\.pollInFlight\.version === version\) return;/);
   assert.match(app, /const previousJob = state\.currentJob;[\s\S]*?state\.currentJob = previousJob;[\s\S]*?startPolling\(\);/);
   assert.match(app, /pending-metric-count/);
+});
+
+
+test('discovery recovery and cancellation suppress stale client state', async () => {
+  const app = await readFile(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  const routes = await readFile(new URL('../src/routes.js', import.meta.url), 'utf8');
+
+  assert.match(routes, /Recovery is deliberately read-only/);
+  assert.match(routes, /if \(!job \|\| !\['queued', 'running'\]\.includes\(job\.status\)\) return res\.json\(\{ jobId: null, status: null \}\)/);
+  assert.match(app, /if \(current\.jobId && active\(current\.status\)\)/);
+  assert.match(app, /state\.pendingCount = Number\(current\.pendingCount\) \|\| 0/);
+  assert.match(app, /if \(view === 'pending' && version !== state\.jobVersion\) return/);
+  assert.match(app, /const version = \+\+state\.jobVersion;[\s\S]*?stopPolling\(\);[\s\S]*?await api\(`\/api\/discovery\/jobs\/\$\{jobId\}\/cancel`[\s\S]*?await fetchJobStatus\(jobId, version\)/);
+  assert.match(app, /if \(job\.status === 'cancelled'\) \{[\s\S]*?stopPolling\(\);[\s\S]*?state\.cancelling = false;[\s\S]*?\$\('#job-progress'\)\.hidden = true;[\s\S]*?await loadLeads\('pending', \{ cancelled: true \}\)/);
+  assert.match(app, /pending: options\.cancelled \? \['Search cancelled', 'No leads remain for review\.'\]/);
 });
