@@ -1,14 +1,16 @@
-const state = { view: 'find', jobId: null, currentJob: null, pendingCount: 0, searchLocked: false, poll: null, pollInFlight: false, cancelling: false, jobVersion: 0, pages: { pending: 1, saved: 1, discarded: 1, history: 1 }, loading: {}, selected: new Set(), bulkLoading: false, modalReturn: null };
+const state = { view: 'find', jobId: null, currentJob: null, pendingCount: 0, searchLocked: false, poll: null, pollInFlight: null, cancelling: false, jobVersion: 0, pages: { pending: 1, saved: 1, discarded: 1, history: 1 }, loading: {}, selected: new Set(), bulkLoading: false, modalReturn: null };
 const $ = selector => document.querySelector(selector); const terminal = new Set(['completed', 'failed', 'cancelled']);
+const active = status => ['queued', 'running'].includes(status);
 const escape = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
 const plural = (n, word = 'lead') => `${n} ${word}${n === 1 ? '' : 's'}`;
 async function api(url, options = {}) { const response = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options }); const data = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(data.error || 'Request failed'); error.code = data.code; throw error; } return data; }
 function toast(message) { const el = $('#toast'); el.textContent = message; el.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove('show'), 3200); }
 const empty = (title, text) => `<div class="empty"><b>${escape(title)}</b><span>${escape(text)}</span></div>`; const loading = text => `<div class="empty loading-state"><span class="spinner"></span><b>${escape(text)}</b></div>`;
-function stopPolling() { if (state.poll) clearInterval(state.poll); state.poll = null; state.pollInFlight = false; }
+function stopPolling() { if (state.poll) clearInterval(state.poll); state.poll = null; }
+function startPolling() { if (!state.jobId || !active(state.currentJob?.status) || state.poll) return; state.poll = setInterval(poll, 2500); void poll(); }
 function lockForm(locked, message) { $('#discovery-fields').disabled = locked; $('#find-leads-button').disabled = locked; $('#discovery-form').classList.toggle('is-locked', locked); $('#form-lock-note').textContent = message; }
-function updateLock(job = state.currentJob) { state.searchLocked = Boolean(job && ['queued', 'running'].includes(job.status)) || state.pendingCount > 0; if (job && ['queued', 'running'].includes(job.status)) lockForm(true, 'Search in progress. Please wait for it to finish.'); else if (state.pendingCount) lockForm(true, 'Resolve all pending leads before starting a new search.'); else lockForm(false, 'Ready for a new search.'); }
-function setProgress(job) { const requested = Number(job.requested) || 0; const found = Number(job.found) || 0; const pct = requested ? Math.min(100, Math.round(found / requested * 100)) : 0; ['requested','found','duplicates','rejected'].forEach(key => $(`#${key === 'duplicates' ? 'duplicate' : key === 'rejected' ? 'rejected' : key}-count`).textContent = Number(job[key]) || 0); $('#pending-metric-count').textContent = Number(job.pendingCount ?? state.pendingCount) || 0; $('#progress-percent').textContent = `${pct}%`; $('#progress-fill').style.width = `${pct}%`; $('.progress-track').setAttribute('aria-valuenow', pct); $('#progress-count').textContent = `${found} of ${requested} requested leads found`; const labels = { queued: ['Discovery in progress','Waiting to start…'], running: ['Discovery in progress','Searching for leads…'], cancelling: ['Discovery in progress','Cancelling search…'], completed: ['Discovery complete','Search completed'], cancelled: ['Search cancelled','Search cancelled'], failed: ['Discovery failed','Search failed'] }; $('#progress-eyebrow').textContent = labels[job.status][0]; $('#progress-title').textContent = labels[job.status][1]; $('#progress-message').textContent = job.status === 'cancelling' ? 'Cancelling the discovery search…' : job.status === 'cancelled' ? (state.pendingCount ? `Search cancelled. You still have ${state.pendingCount} leads waiting for review.` : 'Search cancelled.') : job.status === 'completed' ? `Found ${plural(found, 'usable pending lead')}.` : job.status === 'failed' ? (job.error || 'Discovery could not be completed.') : 'Searching public sources and checking businesses…'; $('#progress-spinner').hidden = terminal.has(job.status); $('#cancel-job').hidden = terminal.has(job.status); $('#cancel-job').disabled = state.cancelling; $('#cancel-job').textContent = state.cancelling ? 'Cancelling…' : 'Cancel search'; }
+function updateLock(job = state.currentJob) { state.searchLocked = Boolean(job && active(job.status)) || state.pendingCount > 0; if (job && active(job.status)) lockForm(true, 'Search in progress. Please wait for it to finish.'); else if (state.pendingCount) lockForm(true, 'Resolve all pending leads before starting a new search.'); else lockForm(false, 'Ready for a new search.'); }
+function setProgress(job) { const requested = Number(job.requested) || 0; const found = Number(job.found) || 0; const pct = requested ? Math.min(100, Math.round(found / requested * 100)) : 0; ['requested','found','duplicates','rejected'].forEach(key => $(`#${key === 'duplicates' ? 'duplicate' : key === 'rejected' ? 'rejected' : key}-count`).textContent = Number(job[key]) || 0); $('#pending-metric-count').textContent = Number(job.pendingCount ?? state.pendingCount) || 0; $('#progress-percent').textContent = `${pct}%`; $('#progress-fill').style.width = `${pct}%`; $('.progress-track').setAttribute('aria-valuenow', pct); $('#progress-count').textContent = `${found} of ${requested} requested leads found`; const labels = { queued: ['Discovery in progress','Waiting to start…'], running: ['Discovery in progress','Searching for leads…'], cancelling: ['Discovery in progress','Cancelling…'], completed: ['Discovery complete','Search completed'], cancelled: ['Search cancelled','Search cancelled'], failed: ['Discovery failed','Search failed'] }; $('#progress-eyebrow').textContent = labels[job.status][0]; $('#progress-title').textContent = labels[job.status][1]; $('#progress-message').textContent = job.status === 'cancelling' ? 'Cancelling…' : job.status === 'cancelled' ? (state.pendingCount ? `Search cancelled. You still have ${state.pendingCount} leads waiting for review.` : 'Search cancelled.') : job.status === 'completed' ? `Found ${plural(found, 'usable pending lead')}.` : job.status === 'failed' ? (job.error || 'Discovery could not be completed.') : 'Searching public sources and checking businesses…'; $('#progress-spinner').hidden = terminal.has(job.status); $('#cancel-job').hidden = terminal.has(job.status); $('#cancel-job').disabled = state.cancelling; $('#cancel-job').textContent = state.cancelling ? 'Cancelling…' : 'Cancel search'; }
 function updateToolbar() { $('#pending-toolbar').hidden = !state.pendingCount; $('#pending-count').textContent = `${plural(state.pendingCount)} waiting for review`; $('#selected-count').textContent = `${state.selected.size} selected`; const disabled = !state.selected.size || state.bulkLoading; $('#save-selected').disabled = disabled; $('#discard-selected').disabled = disabled; $('#clear-remaining').disabled = state.bulkLoading; const rows = [...document.querySelectorAll('[data-select-lead]')]; const all = $('#select-page'); if (all) { all.checked = rows.length > 0 && rows.every(item => state.selected.has(item.value)); all.indeterminate = rows.some(item => state.selected.has(item.value)) && !all.checked; } }
 function leadRows(items, view) { const pending = view === 'pending'; return `<table class="lead-table"><thead><tr>${pending ? '<th><input id="select-page" type="checkbox" aria-label="Select all leads on this page"></th>' : ''}<th>Business</th><th>Website</th><th>Email</th><th>Phone</th><th>Actions</th></tr></thead><tbody>${items.map(lead => `<tr>${pending ? `<td class="selection" data-label="Select"><input data-select-lead type="checkbox" value="${lead._id}" aria-label="Select ${escape(lead.businessName)}" ${state.selected.has(lead._id) ? 'checked' : ''}></td>` : ''}<td class="business" data-label="Business">${escape(lead.businessName)}</td><td data-label="Website"><a class="link" rel="noopener noreferrer" target="_blank" href="${escape(lead.website)}">${escape(lead.domain)}</a></td><td data-label="Email"><a class="link" href="mailto:${escape(lead.email)}">${escape(lead.email)}</a></td><td data-label="Phone">${lead.phone ? escape(lead.phone) : '—'}</td><td data-label="Actions"><div class="actions">${pending ? `<button class="button secondary" data-status="saved" data-id="${lead._id}">Save</button><button class="button secondary danger" data-status="discarded" data-id="${lead._id}">Not useful</button>` : '<span class="count-chip neutral">Permanent</span>'}</div></td></tr>`).join('')}</tbody></table>`; }
 function pager(data, view) { const p = data.pagination; return p.pages < 2 ? '' : `<div class="pagination"><button class="button secondary" data-page="${p.page - 1}" data-page-view="${view}" ${p.page === 1 ? 'disabled' : ''}>Previous</button><span>Page ${p.page} of ${p.pages}</span><button class="button secondary" data-page="${p.page + 1}" data-page-view="${view}" ${p.page === p.pages ? 'disabled' : ''}>Next</button></div>`; }
@@ -16,6 +18,10 @@ async function loadLeads(view = 'pending') { const target = view === 'pending' ?
 async function loadHistory() { if (state.loading.history) return; state.loading.history = true; $('#history-results').innerHTML = loading('Loading search history…'); try { const data = await api(`/api/search-history?page=${state.pages.history}&limit=25`); $('#history-results').innerHTML = data.items.length ? `<table class="history-table"><thead><tr><th>Category</th><th>Location</th><th>Keywords</th><th>Requested</th><th>Found</th><th>Date</th></tr></thead><tbody>${data.items.map(x => `<tr><td data-label="Category" class="business">${escape(x.category)}</td><td data-label="Location">${escape(x.location)}</td><td data-label="Keywords">${escape(x.keywords || '—')}</td><td data-label="Requested">${x.requestedCount}</td><td data-label="Found">${x.foundCount}</td><td data-label="Date">${new Date(x.createdAt).toLocaleDateString()}</td></tr>`).join('')}</tbody></table>` + pager(data, 'history') : empty('No searches yet', 'Completed discovery requests will appear here.'); } finally { state.loading.history = false; } }
 function setView(view) { if (!['find','saved','discarded','history'].includes(view)) view = 'find'; state.view = view; document.querySelectorAll('.view').forEach(x => { x.hidden = x.id !== `view-${view}`; }); document.querySelectorAll('[data-view]').forEach(x => x.classList.toggle('active', x.dataset.view === view)); if (view === 'find') loadLeads(); if (view === 'saved' || view === 'discarded') loadLeads(view); if (view === 'history') loadHistory(); }
 async function restoreCurrent() {
+  // A restore can follow an error/review action while an older request is
+  // pending. Invalidate it before adopting the server's durable current job.
+  stopPolling();
+  state.jobVersion += 1;
   const current = await api('/api/discovery/current');
   if (current.jobId) {
     state.jobId = current.jobId;
@@ -24,11 +30,11 @@ async function restoreCurrent() {
     $('#job-progress').hidden = false;
     setProgress(current);
     updateLock(current);
-    await poll();
-    if (state.jobId && !state.poll) state.poll = setInterval(poll, 2500);
+    startPolling();
   } else {
     state.jobId = null;
     state.currentJob = null;
+    state.pendingCount = 0;
     state.cancelling = false;
     $('#job-progress').hidden = true;
     updateLock();
@@ -56,21 +62,24 @@ async function fetchJobStatus(jobId, version = state.jobVersion) {
   return job;
 }
 async function poll() {
-  if (!state.jobId || state.pollInFlight) return;
+  if (!state.jobId) return;
   const jobId = state.jobId;
   const version = state.jobVersion;
-  state.pollInFlight = true;
+  if (state.pollInFlight?.jobId === jobId && state.pollInFlight.version === version) return;
+  const request = { jobId, version };
+  state.pollInFlight = request;
   try { await fetchJobStatus(jobId, version); }
   catch { if (state.jobId === jobId && state.jobVersion === version) { stopPolling(); toast('Unable to check discovery progress.'); } }
-  finally { state.pollInFlight = false; }
+  finally { if (state.pollInFlight === request) state.pollInFlight = null; }
 }
 async function bulk(status, ids) { if (!ids.length || state.bulkLoading) return; state.bulkLoading = true; updateToolbar(); try { const data = await api('/api/leads/bulk-status', { method: 'PATCH', body: JSON.stringify({ ids, status }) }); ids.forEach(id => state.selected.delete(id)); state.pendingCount = data.pendingCount; await loadLeads(); updateLock(); toast(`✓ ${plural(data.modifiedCount)} updated`); } catch (error) { toast(error.message); } finally { state.bulkLoading = false; updateToolbar(); } }
 function openClearModal() { if (!state.pendingCount || !state.jobId) return; state.modalReturn = document.activeElement; $('#clear-modal-title').textContent = `Clear ${plural(state.pendingCount)}?`; $('#clear-confirm').textContent = `Clear ${state.pendingCount} leads`; $('#clear-modal').hidden = false; $('#clear-confirm').focus(); }
 function closeClearModal() { $('#clear-modal').hidden = true; state.modalReturn?.focus(); }
-$('#discovery-form').addEventListener('submit', async event => { event.preventDefault(); if ($('#find-leads-button').disabled) return; const data = Object.fromEntries(new FormData(event.currentTarget)); try { const job = await api('/api/discovery/jobs', { method: 'POST', body: JSON.stringify(data) }); state.jobVersion += 1; state.jobId = job.jobId; state.pendingCount = 0; state.currentJob = { ...job, requested: Number(data.requestedCount), found: 0, duplicates: 0, rejected: 0 }; $('#job-progress').hidden = false; setProgress(state.currentJob); updateLock(); await poll(); if (state.jobId && !state.poll) state.poll = setInterval(poll, 2500); toast('Search started'); } catch (error) { toast(error.message); await restoreCurrent(); } });
+$('#discovery-form').addEventListener('submit', async event => { event.preventDefault(); if ($('#find-leads-button').disabled) return; const data = Object.fromEntries(new FormData(event.currentTarget)); try { const job = await api('/api/discovery/jobs', { method: 'POST', body: JSON.stringify(data) }); stopPolling(); state.jobVersion += 1; state.jobId = job.jobId; state.pendingCount = 0; state.currentJob = { ...job, requested: Number(data.requestedCount), found: 0, duplicates: 0, rejected: 0 }; $('#job-progress').hidden = false; setProgress(state.currentJob); updateLock(); startPolling(); toast('Search started'); } catch (error) { toast(error.message); await restoreCurrent(); } });
 $('#cancel-job').addEventListener('click', async () => {
   if (!state.jobId || state.cancelling) return;
   const jobId = state.jobId;
+  const previousJob = state.currentJob;
   state.cancelling = true;
   // Invalidate any running poll before requesting cancellation. Its older state
   // must never overwrite the cancellation-specific status refresh below.
@@ -87,8 +96,9 @@ $('#cancel-job').addEventListener('click', async () => {
   } catch (error) {
     state.cancelling = false;
     if (state.jobId === jobId && state.jobVersion === version) {
+      state.currentJob = previousJob;
       setProgress(state.currentJob);
-      poll();
+      startPolling();
     }
     toast(error.message);
   }

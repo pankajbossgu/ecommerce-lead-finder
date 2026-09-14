@@ -56,10 +56,10 @@ router.post('/discovery/jobs', discoveryRateLimit, async (req, res) => {
   const jobId = new mongoose.Types.ObjectId();
   let locked;
   try {
-    locked = await DiscoveryState.findOneAndUpdate({ _id: 'current', currentJobId: null }, { $set: { currentJobId: jobId }, $setOnInsert: { _id: 'current' } }, { upsert: true, new: true });
+    locked = await DiscoveryState.findOneAndUpdate({ _id: 'current', currentJobId: null }, { $set: { currentJobId: jobId, lastJobId: jobId }, $setOnInsert: { _id: 'current' } }, { upsert: true, new: true });
   } catch (error) {
     if (error?.code !== 11000) throw error;
-    locked = await DiscoveryState.findOneAndUpdate({ _id: 'current', currentJobId: null }, { $set: { currentJobId: jobId } }, { new: true });
+    locked = await DiscoveryState.findOneAndUpdate({ _id: 'current', currentJobId: null }, { $set: { currentJobId: jobId, lastJobId: jobId } }, { new: true });
   }
   if (!locked || String(locked.currentJobId) !== String(jobId)) throw new AppError('A discovery search is already in progress or awaiting review.', 409, 'SEARCH_BLOCKED_ACTIVE_JOB');
   let job;
@@ -68,14 +68,25 @@ router.post('/discovery/jobs', discoveryRateLimit, async (req, res) => {
   waitUntil(runDiscovery(job.id));
 });
 router.get('/discovery/current', async (_req, res) => {
-  const job = await SearchJob.findOne({ status: { $in: ['queued', 'running'] } }).sort({ createdAt: -1 }).lean();
-  res.json(job ? jobPayload(job) : { jobId: null, status: null });
+  // The singleton is the durable owner of the one current search. Looking up
+  // the newest running job can recover an unrelated orphan instead of the job
+  // that currently holds the discovery lock.
+  const current = await currentDiscovery();
+  if (current.job) return res.json(jobPayload(current.job, current.pendingCount));
+  // The lock is released after a cancelled search with no pending leads. Keep
+  // its terminal result recoverable long enough for a page refresh to show the
+  // authoritative cancellation state instead of a client-side searching view.
+  const state = await DiscoveryState.findById('current').lean();
+  const lastJob = state?.lastJobId && await SearchJob.findById(state.lastJobId).lean();
+  if (lastJob?.status === 'cancelled') return res.json(jobPayload(lastJob));
+  return res.json({ jobId: null, status: null });
 });
 router.get('/discovery/jobs/:id', async (req, res) => { objectId(req.params.id, 'Job'); const job = await SearchJob.findById(req.params.id).lean(); if (!job) throw new AppError('Job not found', 404, 'NOT_FOUND'); const pendingCount = await Lead.countDocuments({ searchJobId: job._id, status: 'pending' }); res.json(jobPayload(job, pendingCount)); });
 router.post('/discovery/jobs/:id/cancel', async (req, res) => {
   objectId(req.params.id, 'Job'); await requireCurrentJob(req.params.id);
   const job = await SearchJob.findOneAndUpdate({ _id: req.params.id, status: { $in: ['queued', 'running'] } }, { $set: { status: 'cancelled', completedAt: new Date() } }, { new: true });
   if (!job) throw new AppError('Job cannot be cancelled', 409, 'JOB_NOT_CANCELLABLE');
+  await DiscoveryState.updateOne({ _id: 'current' }, { $set: { lastJobId: job._id } });
   const pendingCount = await releaseIfResolved(job._id);
   // A cancelled request may end while Gemini is in flight. Recording this here
   // makes history durable even if the background callback never runs again.

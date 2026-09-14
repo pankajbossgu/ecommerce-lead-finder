@@ -52,7 +52,9 @@ test('workflow API exposes durable current state, scoped mutations, and distinct
   const routes = await readFile(new URL('../src/routes.js', import.meta.url), 'utf8');
   const services = await readFile(new URL('../src/services.js', import.meta.url), 'utf8');
   assert.match(routes, /router\.get\('\/discovery\/current'/);
-  assert.match(routes, /SearchJob\.findOne\(\{ status: \{ \$in: \['queued', 'running'\] \} \}\)/);
+  assert.match(routes, /const current = await currentDiscovery\(\);/);
+  assert.match(routes, /jobPayload\(current\.job, current\.pendingCount\)/);
+  assert.match(routes, /lastJob\?\.status === 'cancelled'/);
   assert.match(routes, /jobId: null, status: null/);
   assert.match(routes, /SEARCH_BLOCKED_ACTIVE_JOB/);
   assert.match(routes, /SEARCH_BLOCKED_PENDING_LEADS/);
@@ -68,7 +70,7 @@ test('frontend recovery and permanent-lead UI use the current-state and bulk API
   const app = await readFile(new URL('../public/js/app.js', import.meta.url), 'utf8');
   const routes = await readFile(new URL('../src/routes.js', import.meta.url), 'utf8');
   assert.match(app, /\/api\/discovery\/current/);
-  assert.match(app, /if \(state\.jobId && !state\.poll\) state\.poll = setInterval/);
+  assert.match(app, /function startPolling\(\) \{ if \(!state\.jobId \|\| !active\(state\.currentJob\?\.status\) \|\| state\.poll\) return; state\.poll = setInterval\(poll, 2500\); void poll\(\); \}/);
   assert.doesNotMatch(app, /Lead restored for review|data-status="pending"/);
   assert.match(routes, /\/leads\/bulk-status/);
   assert.match(routes, /status: 'pending', searchJobId: current\.job\._id/);
@@ -77,5 +79,7 @@ test('frontend recovery and permanent-lead UI use the current-state and bulk API
   assert.match(app, /const version = \+\+state\.jobVersion;\n  \/\/ Clear the interval[\s\S]*?stopPolling\(\);[\s\S]*?await api\(`\/api\/discovery\/jobs\/\$\{jobId\}\/cancel`/);
   assert.match(app, /await fetchJobStatus\(jobId, version\)/);
   assert.match(app, /state\.jobId !== jobId \|\| state\.jobVersion !== version/);
+  assert.match(app, /if \(state\.pollInFlight\?\.jobId === jobId && state\.pollInFlight\.version === version\) return;/);
+  assert.match(app, /const previousJob = state\.currentJob;[\s\S]*?state\.currentJob = previousJob;[\s\S]*?startPolling\(\);/);
   assert.match(app, /pending-metric-count/);
 });
