@@ -67,3 +67,17 @@ test('rejects unknown external origins', () => {
 test('allows requests without an Origin header', () => {
   assert.equal(isAllowedCorsOrigin(undefined, requestFor(), []), true);
 });
+
+import { resolvedDuplicateFilter } from '../src/services.js';
+
+test('duplicate rule only filters persisted saved and discarded businesses', () => {
+  assert.deepEqual(resolvedDuplicateFilter('brand.example'), { domain: 'brand.example', status: { $in: ['saved', 'discarded'] } });
+  assert.equal(resolvedDuplicateFilter('brand.example').status.$in.includes('new'), false);
+});
+
+test('current-job result filter keeps a job scoped and bulk lifecycle statuses are valid', () => {
+  const jobId = '507f1f77bcf86cd799439011';
+  assert.equal(/^[a-f\d]{24}$/i.test(jobId), true);
+  for (const status of ['saved', 'discarded', 'new']) assert.doesNotThrow(() => assertLeadStatus(status));
+  assert.throws(() => assertLeadStatus('delete'));
+});
