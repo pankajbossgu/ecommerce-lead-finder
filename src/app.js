@@ -282,10 +282,39 @@ app.post('/api/campaigns/:id/recipients', async (req, res) => {
 });
 app.get('/api/campaigns/:id/recipients', async (req, res) => { const campaign = await requireCampaign(req.params.id); const items = await CampaignRecipient.find({ campaignId: campaign._id }).populate('leadId', 'businessName email phone domain').sort({ createdAt: -1 }).lean(); const grouped = new Map(); for (const item of items) { const key = String(item.leadId?._id || item.leadId); if (!grouped.has(key)) grouped.set(key, { lead: item.leadId, email: null, whatsapp: null, lastContacted: null }); const row = grouped.get(key); row[item.channel] = item; const date = ['sent', 'manual_sent'].includes(item.status) ? item.sentAt : null; if (date && (!row.lastContacted || date > row.lastContacted)) row.lastContacted = date; } res.json({ campaign, items: [...grouped.values()] }); });
 async function claimEmailBatch(campaign, retryFailed = false) { const stale = await CampaignRecipient.findOne({ campaignId: campaign._id, channel: 'email', status: 'sending', sendingLeaseExpiresAt: { $lt: new Date() } }).lean(); if (stale?.batchKey) return { claimed: await CampaignRecipient.find({ campaignId: campaign._id, batchKey: stale.batchKey, status: 'sending' }).lean(), batchKey: stale.batchKey, batchNumber: stale.batchNumber || campaign.currentBatch }; const batchKey = `campaign:${campaign._id}:batch:${crypto.randomUUID()}`, batchNumber = (campaign.currentBatch || 0) + 1, claimed = []; for (let i = 0; i < 100; i += 1) { const item = await CampaignRecipient.findOneAndUpdate({ campaignId: campaign._id, channel: 'email', status: { $in: retryFailed ? ['failed'] : ['ready', 'pending'] } }, { $set: { status: 'sending', failureReason: null, batchKey, batchNumber, sendingLeaseExpiresAt: new Date(Date.now() + 10 * 60_000) }, $inc: { attempts: 1 } }, { new: true }).lean(); if (!item) break; claimed.push(item); } if (claimed.length) await Campaign.findByIdAndUpdate(campaign._id, { $set: { status: 'sending', currentBatch: batchNumber, currentBatchSize: claimed.length, currentBatchProcessed: 0, startedAt: campaign.startedAt || new Date(), completedAt: null } }); return { claimed, batchKey, batchNumber }; }
-async function processEmailBatch(campaign, retryFailed = false) { const { claimed, batchKey, batchNumber } = await claimEmailBatch(campaign, retryFailed); if (!claimed.length) return { processed: 0 }; const leads = new Map((await Lead.find({ _id: { $in: claimed.map(r => r.leadId) }, status: 'saved' }).lean()).map(l => [String(l._id), l])); const template = await OutreachTemplate.findOne({ _id: campaign.emailTemplateId, type: 'email' }).lean(); const valid = claimed.filter(r => leads.has(String(r.leadId)) && template && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(leads.get(String(r.leadId)).email));
-  for (const r of claimed.filter(r => !valid.includes(r))) await CampaignRecipient.updateOne({ _id: r._id, status: 'sending' }, { $set: { status: 'failed', failedAt: new Date(), failureReason: 'Lead, email, or template is unavailable' } });
-  try { const ids = await sendEmailBatch(valid.map(r => { const lead = leads.get(String(r.leadId)); return { to: lead.email, subject: renderTemplate(template.subject, lead), text: renderTemplate(template.body, lead) }; }), batchKey); const sentAt = new Date(); await Promise.all(valid.flatMap((r, index) => [CampaignRecipient.updateOne({ _id: r._id, status: 'sending', batchKey }, { $set: { status: 'sent', sentAt, providerMessageId: ids[index]?.id || ids[index] || null, sendingLeaseExpiresAt: null } }), OutreachActivity.create({ leadId: r.leadId, campaignId: campaign._id, channel: 'email', templateId: template._id, recipient: leads.get(String(r.leadId)).email, subject: renderTemplate(template.subject, leads.get(String(r.leadId))), status: 'sent', sentAt, providerMessageId: ids[index]?.id || ids[index] || null })])); } catch (error) { await CampaignRecipient.updateMany({ campaignId: campaign._id, batchKey, status: 'sending' }, { $set: { status: 'failed', failedAt: new Date(), failureReason: error.message.slice(0, 500), sendingLeaseExpiresAt: null } }); }
-  const counts = await updateCampaignCounts(campaign._id); await Campaign.findByIdAndUpdate(campaign._id, { $set: { currentBatchProcessed: claimed.length, status: counts.emailPending ? 'sending' : 'completed', ...(counts.emailPending ? {} : { completedAt: new Date() }) } }); return { processed: claimed.length, batchNumber, counts };
+async function recordEmailFailure(recipient, campaign, lead, template, reason, code) {
+  const failedAt = new Date();
+  await Promise.all([
+    CampaignRecipient.updateOne({ _id: recipient._id, status: 'sending' }, { $set: { status: 'failed', failedAt, failureReason: `${code}: ${reason}`.slice(0, 500), sendingLeaseExpiresAt: null } }),
+    OutreachActivity.create({ leadId: recipient.leadId, campaignId: campaign._id, channel: 'email', templateId: template?._id || recipient.templateId, recipient: lead?.email || recipient.recipient, subject: template && lead ? renderTemplate(template.subject, lead) : null, status: 'failed', failedAt, failureReason: `${code}: ${reason}`.slice(0, 500) })
+  ]);
+}
+async function processEmailBatch(campaign, retryFailed = false) {
+  const { claimed, batchKey, batchNumber } = await claimEmailBatch(campaign, retryFailed);
+  if (!claimed.length) return { processed: 0, sent: 0, failed: 0, skipped: 0, pending: campaign.emailPendingCount || 0, failures: {} };
+  const leads = new Map((await Lead.find({ _id: { $in: claimed.map(r => r.leadId) }, status: 'saved' }).lean()).map(l => [String(l._id), l]));
+  const template = await OutreachTemplate.findOne({ _id: campaign.emailTemplateId, type: 'email' }).lean();
+  const invalid = claimed.filter(r => !leads.has(String(r.leadId)) || !template || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(leads.get(String(r.leadId))?.email || ''));
+  for (const r of invalid) await recordEmailFailure(r, campaign, leads.get(String(r.leadId)), template, 'Lead, recipient email, or template is unavailable.', 'EMAIL_RECIPIENT_INVALID');
+  const valid = claimed.filter(r => !invalid.includes(r)); const failures = {}; let sent = 0; let failed = invalid.length;
+  if (invalid.length) failures.EMAIL_RECIPIENT_INVALID = invalid.length;
+  try {
+    const results = valid.length ? await sendEmailBatch(valid.map(r => { const lead = leads.get(String(r.leadId)); return { to: lead.email, subject: renderTemplate(template.subject, lead), text: renderTemplate(template.body, lead) }; }), batchKey) : [];
+    await Promise.all(valid.map(async (r, index) => {
+      const result = results[index]; const lead = leads.get(String(r.leadId));
+      if (!result?.ok) { failed += 1; failures[result?.code || 'EMAIL_PROVIDER_PARTIAL_FAILURE'] = (failures[result?.code || 'EMAIL_PROVIDER_PARTIAL_FAILURE'] || 0) + 1; return recordEmailFailure(r, campaign, lead, template, result?.reason || 'Provider did not accept this recipient.', result?.code || 'EMAIL_PROVIDER_PARTIAL_FAILURE'); }
+      const sentAt = new Date(); sent += 1;
+      return Promise.all([CampaignRecipient.updateOne({ _id: r._id, status: 'sending', batchKey }, { $set: { status: 'sent', sentAt, providerMessageId: result.id, sendingLeaseExpiresAt: null } }), OutreachActivity.create({ leadId: r.leadId, campaignId: campaign._id, channel: 'email', templateId: template._id, recipient: lead.email, subject: renderTemplate(template.subject, lead), status: 'sent', sentAt, providerMessageId: result.id })]);
+    }));
+  } catch (error) {
+    const code = error.code || 'EMAIL_PROVIDER_REJECTED'; const reason = error.message || 'Email provider rejected the request.';
+    failures[code] = valid.length; failed += valid.length;
+    for (const r of valid) await recordEmailFailure(r, campaign, leads.get(String(r.leadId)), template, reason, code);
+  }
+  const counts = await updateCampaignCounts(campaign._id);
+  const status = counts.emailPending ? 'ready' : (counts.emailFailedCount && !counts.emailSentCount ? 'failed' : 'completed');
+  await Campaign.findByIdAndUpdate(campaign._id, { $set: { currentBatchProcessed: claimed.length, status, ...(counts.emailPending ? {} : { completedAt: new Date() }) } });
+  return { processed: claimed.length, sent, failed, skipped: invalid.length, pending: counts.emailPending, failures, batchNumber, counts };
 }
 app.post('/api/campaigns/:id/send', sendRateLimit, async (req, res) => { const campaign = await requireCampaign(req.params.id); if (!campaign.channels.includes('email')) throw new AppError('Campaign has no email channel', 409, 'NO_EMAIL_CHANNEL'); const result = await processEmailBatch(campaign); const current = await requireCampaign(req.params.id); res.json({ ...result, campaign: current }); });
 app.post('/api/campaigns/:id/retry-failed', sendRateLimit, async (req, res) => { const result = await processEmailBatch(await requireCampaign(req.params.id), true); res.json(result); });
@@ -305,7 +334,8 @@ app.use((error, _req, res, _next) => {
   if (error?.code === 11000) return res.status(409).json({ error: 'This business is already saved or marked not useful.', code: 'DUPLICATE_RESOLVED_LEAD' });
   const status = error.status || 500;
   if (status >= 500) logger.error(error.message, error.stack);
-  res.status(status).json({ error: status >= 500 ? 'Something went wrong. Please try again.' : error.message, code: error.code || 'INTERNAL_ERROR' });
+  const safeEmailError = typeof error.code === 'string' && error.code.startsWith('EMAIL_');
+  res.status(status).json({ error: status >= 500 && !safeEmailError ? 'Something went wrong. Please try again.' : error.message, code: error.code || 'INTERNAL_ERROR' });
 });
 
 async function startServer() {

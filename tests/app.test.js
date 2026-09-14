@@ -189,3 +189,32 @@ test('client invalidates stale polling callbacks when cancellation completes', (
   assert.match(client, /stopPolling\(\); setDiscoveryRunning\(true, true\)/);
   assert.match(client, /\$\('#job-progress'\)\.hidden = true/);
 });
+
+import { emailConfiguration, normalizeBatchResponse, sendEmailBatch } from '../src/services/email.js';
+
+test('email readiness validates missing configuration and sender format without exposing credentials', () => {
+  assert.deepEqual(emailConfiguration({ resendApiKey: '', emailFrom: '' }).missing.sort(), ['EMAIL_FROM', 'RESEND_API_KEY']);
+  assert.equal(emailConfiguration({ resendApiKey: 'secret', emailFrom: 'not-an-address' }).code, 'EMAIL_INVALID_SENDER');
+  assert.equal(emailConfiguration({ resendApiKey: 'secret', emailFrom: 'sender@verified.example' }).ready, true);
+  assert.equal(emailConfiguration({ resendApiKey: 'secret', emailFrom: 'LeadScout <sender@verified.example>' }).ready, true);
+});
+test('Resend batch responses retain item-level outcomes and message ids', () => {
+  assert.deepEqual(normalizeBatchResponse({ data: { data: [{ id: 'message-1' }, { error: { message: 'recipient rejected' } }] } }, 2), [{ ok: true, id: 'message-1' }, { ok: false, code: 'EMAIL_PROVIDER_REJECTED', reason: 'The email provider rejected this request.' }]);
+  assert.throws(() => normalizeBatchResponse({ error: { message: 'sender domain rejected' } }, 1), error => error.code === 'EMAIL_INVALID_SENDER');
+  const partial = normalizeBatchResponse({ data: { data: [{ error: { message: 'API key abc should not be shown' } }] } }, 1)[0];
+  assert.equal(partial.reason, 'The email provider rejected this request.');
+});
+test('email sending preserves batch idempotency and maps successful provider ids', async () => {
+  const calls = []; class FakeResend { constructor(key) { assert.equal(key, 'key'); } batch = { send: async (_messages, options) => { calls.push(options); return { data: { data: [{ id: 'provider-id' }] } }; } }; }
+  const result = await sendEmailBatch([{ to: 'to@example.org', subject: 'Hi', text: 'Hello' }], 'campaign:1:batch:retry-safe', { resendApiKey: 'key', emailFrom: 'from@verified.example' }, FakeResend);
+  assert.deepEqual(result, [{ ok: true, id: 'provider-id' }]); assert.equal(calls[0].idempotencyKey, 'campaign:1:batch:retry-safe');
+});
+test('outreach regression contracts include recipient failures, activity history, and structured send summaries', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /recordEmailFailure/); assert.match(app, /OutreachActivity\.create/); assert.match(app, /failures/); assert.match(app, /EMAIL_RECIPIENT_INVALID/);
+  assert.match(app, /pending: counts\.emailPending/);
+});
+test('workspace DOM contracts cover compact cards, filter surface, and campaign metrics', () => {
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'); const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(html, /id="saved-filter-panel"/); assert.match(html, /role="tab"/); assert.match(client, /lead-card-list/); assert.match(client, /try \{ const result = await api/); assert.match(client, /<details>/); assert.match(client, /campaign-metrics/); assert.match(client, /Batch failed/);
+});
