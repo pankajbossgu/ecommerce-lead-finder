@@ -61,6 +61,16 @@ export function parsePagination(query) {
   return { page, limit };
 }
 export function assertLeadStatus(status) {
-  if (!['new', 'saved', 'discarded'].includes(status)) throw badRequest('Status must be new, saved, or discarded');
+  if (!['pending', 'saved', 'discarded'].includes(status)) throw badRequest('Status must be pending, saved, or discarded');
   return status;
+}
+export function assertPermanentLeadStatus(status) {
+  if (!['saved', 'discarded'].includes(status)) throw badRequest('Status must be saved or discarded');
+  return status;
+}
+export function uniqueObjectIds(ids) {
+  if (!Array.isArray(ids) || !ids.length || ids.length > 100) throw badRequest('Select between 1 and 100 leads');
+  const unique = [...new Set(ids)];
+  if (!unique.every((id) => typeof id === 'string' && /^[a-f\d]{24}$/i.test(id))) throw badRequest('Each lead id must be a valid ObjectId');
+  return unique;
 }

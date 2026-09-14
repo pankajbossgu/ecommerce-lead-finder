@@ -32,8 +32,9 @@ function prepareLead(candidate, input) {
 export async function runDiscovery(jobId) {
   let job = await SearchJob.findById(jobId);
   if (!job || job.status === 'cancelled') return;
-  await SearchJob.updateOne({ _id: jobId, status: 'queued' }, { $set: { status: 'running', startedAt: new Date() } });
-  const input = job.toObject(); let found = 0, duplicates = 0, rejected = 0;
+  const started = await SearchJob.findOneAndUpdate({ _id: jobId, status: 'queued' }, { $set: { status: 'running', startedAt: new Date() } }, { new: true });
+  if (!started) return;
+  const input = started.toObject(); let found = await Lead.countDocuments({ searchJobId: jobId, status: 'pending' }), duplicates = 0, rejected = 0;
   try {
     for (let attempt = 0; attempt < env.discoveryMaxAttempts && found < input.requestedCount; attempt += 1) {
       job = await SearchJob.findById(jobId).lean(); if (!job || job.status === 'cancelled') return;
@@ -42,8 +43,10 @@ export async function runDiscovery(jobId) {
         if (found >= input.requestedCount) break;
         const lead = prepareLead(candidate, input);
         if (!lead) { rejected += 1; continue; }
-        if (await Lead.exists({ domain: lead.domain })) { duplicates += 1; continue; }
-        try { await Lead.create(lead); found += 1; } catch (error) { if (error?.code === 11000) duplicates += 1; else throw error; }
+        const existing = await Lead.findOne({ domain: lead.domain }).select('status searchJobId').lean();
+        if (existing) { duplicates += 1; continue; }
+        if ((await SearchJob.exists({ _id: jobId, status: { $ne: 'cancelled' } })) === null) return;
+        try { await Lead.create({ ...lead, status: 'pending', searchJobId: jobId }); found += 1; } catch (error) { if (error?.code === 11000) duplicates += 1; else throw error; }
       }
       await SearchJob.updateOne({ _id: jobId }, { $set: { foundCount: found, duplicateCount: duplicates, rejectedCount: rejected } });
     }

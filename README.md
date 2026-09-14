@@ -1,6 +1,6 @@
 # LeadScout — E-commerce Lead Finder
 
-A Phase 1, server-rendered-with-static-assets SaaS application for discovering **new e-commerce businesses** with Gemini Google Search grounding. It is intentionally limited to lead discovery and management: no campaigns, outreach, messaging, or CRM pipeline are included.
+A Phase 1, server-rendered-with-static-assets SaaS application for discovering **e-commerce businesses** with Gemini Google Search grounding. It is intentionally limited to lead discovery and management: no campaigns, outreach, messaging, or CRM pipeline are included.
 
 ## Lead quality rule
 
@@ -11,7 +11,7 @@ A lead is saved only when the candidate has an official business website **and**
 - Gemini discovery with Google Search grounding, URL Context, and structured JSON output.
 - Bounded, asynchronous MongoDB-backed discovery jobs with live progress polling and cancellation.
 - Deterministic validation of model output, URLs, domains, and public email syntax.
-- Unique normalized-domain protection across new, saved, and discarded leads; concurrent duplicate-key conflicts are handled as duplicates.
+- Pending leads are temporary review items; saved and discarded decisions are permanent normalized-domain exclusions. Only one unresolved search can exist at a time.
 - Find Leads, Saved Leads, Not Useful, and Search History views in a responsive vanilla HTML/CSS/JavaScript dashboard.
 - Search, pagination, restore/save/discard actions, accessible controls, secure headers, CORS, body limits, and discovery endpoint rate limiting.
 
@@ -19,7 +19,15 @@ A lead is saved only when the candidate has an official business website **and**
 
 `public/` contains the dependency-free responsive UI. `src/` intentionally uses a small set of consolidated modules: routes expose APIs, models persist leads/jobs/history, services handle Gemini discovery, and utilities centralize validation and normalization. Gemini is only called from the server.
 
-Discovery is deliberately bounded by `DISCOVERY_MAX_ATTEMPTS` and `DISCOVERY_BATCH_SIZE` for serverless execution safety. The process discovers candidate domains first, checks MongoDB per candidate, and relies on the unique index for the final race-safe duplicate guard. It never serializes all previous leads into a Gemini prompt.
+Discovery is deliberately bounded by `DISCOVERY_MAX_ATTEMPTS` and `DISCOVERY_BATCH_SIZE` for serverless execution safety. The process discovers candidate domains first, checks MongoDB per candidate, reuses an existing pending document for the current job, and relies on the unique index for the final duplicate guard. It never serializes all previous leads into a Gemini prompt.
+
+## Review lifecycle and recovery
+
+Discovered leads start as `pending` and are associated with their persisted `SearchJob`. Pending leads survive refreshes, browser closes, and later visits until they are saved, marked Not Useful (`discarded`), or explicitly cleared. Saved and discarded domains permanently exclude future discovery; clearing pending leads deletes only those pending records, so that domain may be discovered later.
+
+A MongoDB singleton discovery-state document atomically reserves the one unresolved search. A new job is rejected while a job is queued/running or its completed/cancelled job has pending leads. `GET /api/discovery/current` restores the current job, counters, and pending count after a refresh. Pending review supports page-scoped selection, `PATCH /api/leads/bulk-status`, and `DELETE /api/discovery/jobs/:id/pending-leads`; those operations are scoped server-side to the current unresolved job.
+
+The job record survives refresh, but Vercel execution is still bounded by `waitUntil` and the 60-second `maxDuration`. Persistence lets the browser recover the state while execution remains alive; it is not an unlimited durable worker.
 
 ## Requirements
 
@@ -43,7 +51,6 @@ Set these values in `.env`:
 | --- | --- | --- |
 | `GEMINI_API_KEY` | Yes | Server-only Gemini API credential. |
 | `MONGODB_URI` | Yes | MongoDB Atlas connection URI; the application selects `ecommerce_lead_finder`. |
-| `GEMINI_MODEL` | Yes | Gemini model; default example is `gemini-2.5-flash`. |
 | `NODE_ENV` | Yes | `development` or `production`. |
 | `APP_ORIGIN` | Yes | Comma-separated allowed browser origins. |
 | `LOG_LEVEL` | Yes | Logging verbosity setting. |
@@ -61,9 +68,8 @@ This project uses your existing Atlas **Cluster0** and consistently connects Mon
 Create a local `.env` from `.env.example` and supply your own secret values (the file is ignored by Git):
 
 ```dotenv
-MONGODB_URI=mongodb+srv://pankajsingh989980_db_user:<URL-ENCODED-PASSWORD>@<cluster-host>/ecommerce_lead_finder?retryWrites=true&w=majority
+MONGODB_URI=mongodb+srv://<username>:<URL-ENCODED-PASSWORD>@<cluster-host>/ecommerce_lead_finder?retryWrites=true&w=majority
 GEMINI_API_KEY=<your-gemini-api-key>
-GEMINI_MODEL=gemini-2.5-flash
 NODE_ENV=development
 APP_ORIGIN=http://localhost:3000
 ```
@@ -76,12 +82,12 @@ The safe connection status endpoint is `GET /api/health`. It reports only `ok`/`
 
 The Gemini service uses the official `@google/genai` SDK and `models.generateContent`, configured with `googleSearch`, `urlContext`, `responseMimeType: "application/json"`, and a response JSON schema. The prompt requires official websites, public-email source evidence, e-commerce relevance, and no invented contact data. Direct website crawling is intentionally not used: grounding and URL Context keep the initial release bounded and avoid aggressive fetching.
 
-Availability of Google Search grounding and URL Context depends on the selected model, API key, quota, and Google’s current regional/product availability. Configure a supported `GEMINI_MODEL` in Vercel if the provided default is not available to your account.
+Gemini is deliberately hardcoded to `gemini-3.1-flash-lite`. Availability of Google Search grounding and URL Context depends on that model, API key, quota, and Google’s current regional/product availability.
 
 ## Vercel deployment
 
 1. Import the repository into Vercel.
-2. In **Project → Settings → Environment Variables**, add `MONGODB_URI`, `GEMINI_API_KEY`, and `GEMINI_MODEL`; set `NODE_ENV=production` and `APP_ORIGIN` to the production Vercel URL.
+2. In **Project → Settings → Environment Variables**, add `MONGODB_URI` and `GEMINI_API_KEY`; set `NODE_ENV=production` and `APP_ORIGIN` to the production Vercel URL.
 3. Deploy. `api/index.js` exports the Express app and sets a 60-second maximum duration; `vercel.json` rewrites requests through the Express entry point.
 4. Use MongoDB Atlas or another MongoDB endpoint reachable from Vercel.
 
