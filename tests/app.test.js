@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline } from '../src/app.js';
-import { activeJobFilter, isTerminalJobStatus } from '../src/services.js';
+import { activeJobFilter, buildDiscoveryPrompt, isTerminalJobStatus, prepareLead } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeDomain, normalizeEmail, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 
 test('normalizes domains without losing meaningful subdomains', () => {
@@ -15,6 +15,45 @@ test('normalizes and validates public business email addresses', () => {
   assert.equal(isValidPublicEmail('sales@brand.co.uk'), true);
   assert.equal(isValidPublicEmail('hello@example.com'), false);
   assert.equal(isValidPublicEmail('not-an-email'), false);
+});
+
+const discoveryInput = { category: 'Beauty and cosmetics e-commerce brands', location: 'India', keywords: 'D2C, Shopify, COD' };
+const ecommerceCandidate = {
+  businessName: 'Glow Goods', officialWebsite: 'https://glowgoods.example.org', email: 'hello@glowgoods.example.org', phone: null,
+  isEcommerce: true, websiteSourceUrl: 'https://glowgoods.example.org', emailSourceUrl: 'https://glowgoods.example.org/contact',
+  emailSourceType: 'website', isOfficialSocialProfile: null, phoneSourceUrl: null
+};
+
+test('discovery targeting retains physical-product e-commerce requirements and website-first social fallback instructions', () => {
+  const prompt = buildDiscoveryPrompt(discoveryInput, 'beauty brands in India');
+  assert.match(prompt, /physical-product e-commerce/i);
+  assert.match(prompt, /agencies, SaaS or software companies/i);
+  assert.match(prompt, /official website first/i);
+  assert.match(prompt, /Only if the website has no usable public business email may you use.*social profile.*fallback/i);
+  assert.match(prompt, /Never infer, guess, construct, or fabricate an email/i);
+  assert.match(prompt, /Google Search grounding and URL Context/i);
+});
+
+test('lead qualification requires a genuine e-commerce business and a non-social official website', () => {
+  assert.ok(prepareLead(ecommerceCandidate, discoveryInput));
+  assert.equal(prepareLead({ ...ecommerceCandidate, isEcommerce: false }, discoveryInput), null);
+  assert.equal(prepareLead({ ...ecommerceCandidate, officialWebsite: 'https://instagram.com/glowgoods', emailSourceUrl: 'https://instagram.com/glowgoods', emailSourceType: 'social', isOfficialSocialProfile: true }, discoveryInput), null);
+});
+
+test('website email sources are accepted and legacy website checkpoint candidates remain resumable', () => {
+  const qualified = prepareLead(ecommerceCandidate, discoveryInput);
+  assert.equal(qualified.email, 'hello@glowgoods.example.org');
+  assert.equal(qualified.emailSourceUrl, 'https://glowgoods.example.org/contact');
+  assert.ok(prepareLead({ ...ecommerceCandidate, emailSourceType: null }, discoveryInput));
+});
+
+test('official social-profile email is a verified fallback, not an unrelated or guessed source', () => {
+  const socialCandidate = { ...ecommerceCandidate, email: 'contact@glowgoods.example.org', emailSourceUrl: 'https://www.instagram.com/glowgoods/', emailSourceType: 'social', isOfficialSocialProfile: true };
+  assert.equal(prepareLead(socialCandidate, discoveryInput).emailSourceUrl, 'https://www.instagram.com/glowgoods/');
+  assert.equal(prepareLead({ ...socialCandidate, isOfficialSocialProfile: false }, discoveryInput), null);
+  assert.equal(prepareLead({ ...socialCandidate, emailSourceUrl: 'https://instagram.com/glowgoods-deals/', isOfficialSocialProfile: false }, discoveryInput), null);
+  assert.equal(prepareLead({ ...socialCandidate, email: 'hello@example.com' }, discoveryInput), null);
+  assert.equal(prepareLead({ ...ecommerceCandidate, email: null }, discoveryInput), null);
 });
 test('validates discovery counts, pagination, and lead status lifecycle', () => {
   assert.deepEqual(parseDiscoveryInput({ category: 'Fashion', location: 'India', keywords: '', requestedCount: '50' }), { category: 'Fashion', location: 'India', keywords: '', requestedCount: 50 });
