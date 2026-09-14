@@ -296,3 +296,10 @@ textarea { width:100%; min-height:90px; padding:10px 12px; border:1px solid var(
 /* Immediate feedback for user-triggered API actions. */
 .button[aria-busy="true"] { gap: 7px; }
 .button-spinner { width: 14px; height: 14px; margin: 0; border-width: 2px; border-color: currentColor; border-top-color: transparent; }
+
+.lead-pagination { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; color:var(--muted); font-size:13px; font-weight:700; }
+.lead-pagination p { margin:0; }
+.pagination-actions,.page-numbers { display:flex; align-items:center; gap:6px; }
+.page-numbers .button { min-width:38px; padding-inline:10px; }
+.page-numbers .button.active { color:var(--surface); background:var(--brand); border-color:var(--brand); }
+@media (max-width:760px) { .lead-pagination { align-items:stretch; flex-direction:column; } .pagination-actions { justify-content:space-between; } .page-numbers { overflow-x:auto; padding-bottom:2px; } .pagination-actions > .button { min-height:40px; } }
