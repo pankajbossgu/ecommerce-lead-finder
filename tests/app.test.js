@@ -51,7 +51,9 @@ test('same-job duplicate tracker recognizes normalized domains without using bus
 test('workflow API exposes durable current state, scoped mutations, and distinct lock codes', async () => {
   const routes = await readFile(new URL('../src/routes.js', import.meta.url), 'utf8');
   const services = await readFile(new URL('../src/services.js', import.meta.url), 'utf8');
-  assert.match(routes, /GET \/api\/discovery\/current|router\.get\('\/discovery\/current'/);
+  assert.match(routes, /router\.get\('\/discovery\/current'/);
+  assert.match(routes, /SearchJob\.findOne\(\{ status: \{ \$in: \['queued', 'running'\] \} \}\)/);
+  assert.match(routes, /jobId: null, status: null/);
   assert.match(routes, /SEARCH_BLOCKED_ACTIVE_JOB/);
   assert.match(routes, /SEARCH_BLOCKED_PENDING_LEADS/);
   assert.match(routes, /Lead\.deleteMany\(\{ status: 'pending', searchJobId: req\.params\.id \}\)/);
@@ -72,5 +74,8 @@ test('frontend recovery and permanent-lead UI use the current-state and bulk API
   assert.match(routes, /status: 'pending', searchJobId: current\.job\._id/);
   assert.doesNotMatch(routes, /Only saved or Not Useful leads can be restored/);
   assert.match(app, /Cancelling…/);
+  assert.match(app, /const version = \+\+state\.jobVersion;\n  \/\/ Clear the interval[\s\S]*?stopPolling\(\);[\s\S]*?await api\(`\/api\/discovery\/jobs\/\$\{jobId\}\/cancel`/);
+  assert.match(app, /await fetchJobStatus\(jobId, version\)/);
+  assert.match(app, /state\.jobId !== jobId \|\| state\.jobVersion !== version/);
   assert.match(app, /pending-metric-count/);
 });
