@@ -101,3 +101,22 @@ test('regression contracts: durable checkpoint, scoped cap, cancellation cleanup
   assert.match(client, /Ready for future outreach/);
   assert.match(client, /state\.jobId = null; state\.selected\.clear\(\)/);
 });
+
+import { applyDateRange, parseDateRange } from '../src/utils.js';
+
+test('date filters use inclusive UTC calendar days and reject inverted ranges', () => {
+  const range = parseDateRange({ from: '2026-01-01', to: '2026-01-31' }, 'savedAt');
+  assert.equal(range.from.toISOString(), '2026-01-01T00:00:00.000Z');
+  assert.equal(range.to.toISOString(), '2026-02-01T00:00:00.000Z');
+  assert.deepEqual(applyDateRange({}, range), { savedAt: { $gte: range.from, $lt: range.to } });
+  assert.throws(() => parseDateRange({ from: '2026-02-01', to: '2026-01-31' }, 'savedAt'), /greater than or equal/);
+});
+
+test('regression contracts: timestamps, filtered CSV and guarded permanent deletion exist server-side', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const models = fs.readFileSync(new URL('../src/models.js', import.meta.url), 'utf8');
+  assert.match(models, /savedAt/); assert.match(models, /notUsefulAt/);
+  assert.match(app, /\/api\/leads\/export/); assert.match(app, /replace\(\/"\/g, '\"\"'\)/);
+  assert.match(app, /\/api\/settings\/lead-deletion\/count/); assert.match(app, /confirmation !== 'DELETE'/);
+  assert.match(app, /status: action, savedAt/);
+});

@@ -7,7 +7,7 @@ import rateLimit from 'express-rate-limit';
 import mongoose from 'mongoose';
 import { connectDatabase, env, Lead, SearchHistory, SearchJob } from './models.js';
 import { runDiscovery } from './services.js';
-import { AppError, assertLeadStatus, logger, parseDiscoveryInput, parsePagination } from './utils.js';
+import { AppError, applyDateRange, assertLeadStatus, logger, parseDateRange, parseDiscoveryInput, parsePagination } from './utils.js';
 
 const app = express();
 const publicDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), '../public');
@@ -45,6 +45,19 @@ const objectId = (id, type) => {
   if (!mongoose.isValidObjectId(id)) throw new AppError(`${type} not found`, 404, 'NOT_FOUND');
 };
 const pagination = (page, limit, total) => ({ page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) });
+const statusTimestamp = status => status === 'saved' ? 'savedAt' : status === 'discarded' ? 'notUsefulAt' : null;
+function leadFilter(query, { allowJob = true } = {}) {
+  const filter = {};
+  if (query.status) filter.status = assertLeadStatus(query.status);
+  if (allowJob && query.searchJobId) { objectId(query.searchJobId, 'Search job'); filter.searchJobId = query.searchJobId; }
+  const timestamp = statusTimestamp(filter.status);
+  if ((query.from || query.to) && !timestamp) throw new AppError('Date filters require Saved or Not Useful status', 400, 'VALIDATION_ERROR');
+  if (timestamp) applyDateRange(filter, parseDateRange(query, timestamp));
+  if (query.search?.trim()) { const term = query.search.trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); filter.$or = [{ businessName: { $regex: term, $options: 'i' } }, { domain: { $regex: term, $options: 'i' } }, { email: { $regex: term, $options: 'i' } }]; }
+  return filter;
+}
+const csvCell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+function csvRow(lead, srNo) { return [srNo, lead.businessName, lead.website, lead.phone, lead.email, lead.address || '', lead.location || '', '', '', lead.status, lead.discoveredAt?.toISOString() || '', lead.savedAt?.toISOString() || '', lead.notUsefulAt?.toISOString() || ''].map(csvCell).join(','); }
 
 app.disable('x-powered-by');
 app.use(async (_req, _res, next) => {
@@ -97,16 +110,19 @@ app.post('/api/discovery/jobs/:id/cancel', async (req, res) => {
   res.json({ jobId: job.id, status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, completedAt: job.completedAt });
 });
 app.get('/api/leads', async (req, res) => {
-  const { page, limit } = parsePagination(req.query);
-  const filter = {};
-  if (req.query.status) filter.status = assertLeadStatus(req.query.status);
-  if (req.query.searchJobId) { objectId(req.query.searchJobId, 'Search job'); filter.searchJobId = req.query.searchJobId; }
-  if (req.query.search?.trim()) {
-    const term = req.query.search.trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    filter.$or = [{ businessName: { $regex: term, $options: 'i' } }, { domain: { $regex: term, $options: 'i' } }, { email: { $regex: term, $options: 'i' } }];
-  }
-  const [items, total] = await Promise.all([Lead.find(filter).sort({ discoveredAt: -1 }).skip((page - 1) * limit).limit(limit).lean(), Lead.countDocuments(filter)]);
+  const { page, limit } = parsePagination(req.query); const filter = leadFilter(req.query);
+  const sort = req.query.status === 'saved' ? { savedAt: -1, _id: -1 } : req.query.status === 'discarded' ? { notUsefulAt: -1, _id: -1 } : { discoveredAt: -1, _id: -1 };
+  const [items, total] = await Promise.all([Lead.find(filter).sort(sort).skip((page - 1) * limit).limit(limit).lean(), Lead.countDocuments(filter)]);
   res.json({ items: items.map((item, index) => ({ ...item, srNo: (page - 1) * limit + index + 1 })), pagination: pagination(page, limit, total) });
+});
+app.get('/api/leads/export', async (req, res) => {
+  const filter = leadFilter(req.query);
+  const sort = req.query.status === 'saved' ? { savedAt: -1, _id: -1 } : req.query.status === 'discarded' ? { notUsefulAt: -1, _id: -1 } : { discoveredAt: -1, _id: -1 };
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8'); res.setHeader('Content-Disposition', 'attachment; filename="leads.csv"');
+  res.write('﻿Sr. No.,Business Name,Website,Phone,Email,Address,City,State,Pincode,Status,Search Date,Saved Date,Not Useful Date\n');
+  let srNo = 0; const cursor = Lead.find(filter).sort(sort).lean().cursor();
+  for await (const lead of cursor) { srNo += 1; if (!res.write(`${csvRow(lead, srNo)}\n`)) await new Promise(resolve => res.once('drain', resolve)); }
+  res.end();
 });
 app.get('/api/leads/:id', async (req, res) => {
   objectId(req.params.id, 'Lead');
@@ -116,7 +132,8 @@ app.get('/api/leads/:id', async (req, res) => {
 });
 app.patch('/api/leads/:id/status', async (req, res) => {
   objectId(req.params.id, 'Lead'); const status = assertLeadStatus(req.body?.status);
-  const lead = await Lead.findByIdAndUpdate(req.params.id, { $set: { status } }, { new: true, runValidators: true }).lean();
+  const timestamp = statusTimestamp(status); const update = { $set: { status, savedAt: timestamp === 'savedAt' ? new Date() : null, notUsefulAt: timestamp === 'notUsefulAt' ? new Date() : null } };
+  const lead = await Lead.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
   if (!lead) throw new AppError('Lead not found', 404, 'NOT_FOUND'); res.json(lead);
 });
 app.delete('/api/leads/:id', async (req, res) => {
@@ -128,10 +145,26 @@ app.post('/api/leads/bulk', async (req, res) => {
   if (!ids.length || ids.length > 100 || !ids.every(mongoose.isValidObjectId)) throw new AppError('Choose one to 100 valid leads', 400, 'VALIDATION_ERROR');
   if (!['saved', 'discarded', 'delete'].includes(action)) throw new AppError('Unsupported bulk action', 400, 'VALIDATION_ERROR');
   const filter = { _id: { $in: ids }, status: 'new' };
-  const result = action === 'delete' ? await Lead.deleteMany(filter) : await Lead.updateMany(filter, { $set: { status: action } }, { runValidators: true });
+  const timestamp = statusTimestamp(action); const result = action === 'delete' ? await Lead.deleteMany(filter) : await Lead.updateMany(filter, { $set: { status: action, savedAt: timestamp === 'savedAt' ? new Date() : null, notUsefulAt: timestamp === 'notUsefulAt' ? new Date() : null } }, { runValidators: true });
   const changed = result.deletedCount ?? result.modifiedCount;
   if (!changed) throw new AppError('The selected unresolved leads are no longer available', 409, 'LEADS_NOT_ACTIONABLE');
   res.json({ changed });
+});
+app.post('/api/settings/lead-deletion/count', async (req, res) => {
+  const { status = 'all', scope = 'all', from, to, searchJobId } = req.body || {};
+  if (!['all', 'new', 'saved', 'discarded'].includes(status) || !['all', 'custom'].includes(scope)) throw new AppError('Invalid deletion filter', 400, 'VALIDATION_ERROR');
+  const filter = status === 'all' ? {} : { status };
+  if (searchJobId) { objectId(searchJobId, 'Search job'); filter.searchJobId = searchJobId; }
+  if (scope === 'custom') applyDateRange(filter, parseDateRange({ from, to }, 'discoveredAt'));
+  res.json({ count: await Lead.countDocuments(filter) });
+});
+app.post('/api/settings/lead-deletion', async (req, res) => {
+  if (req.body?.confirmation !== 'DELETE') throw new AppError('Type DELETE to permanently delete matching leads', 400, 'CONFIRMATION_REQUIRED');
+  const { status = 'all', scope = 'all', from, to, searchJobId } = req.body || {};
+  if (!['all', 'new', 'saved', 'discarded'].includes(status) || !['all', 'custom'].includes(scope)) throw new AppError('Invalid deletion filter', 400, 'VALIDATION_ERROR');
+  const filter = status === 'all' ? {} : { status }; if (searchJobId) { objectId(searchJobId, 'Search job'); filter.searchJobId = searchJobId; }
+  if (scope === 'custom') applyDateRange(filter, parseDateRange({ from, to }, 'discoveredAt'));
+  const result = await Lead.deleteMany(filter); res.json({ deleted: result.deletedCount });
 });
 app.get('/api/search-history', async (req, res) => {
   const { page, limit } = parsePagination(req.query);

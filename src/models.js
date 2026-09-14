@@ -9,7 +9,11 @@ async function migrateLegacyDomainIndex() {
   if (indexesMigrated) return;
   const indexes = await mongoose.connection.collection('leads').indexes().catch(() => []);
   const legacy = indexes.find(index => index.name === 'domain_1' && index.unique && !index.partialFilterExpression);
+  // Older builds used domain+status, allowing one Saved and one Not Useful copy.
+  // The resolved-domain key must be domain-only for the cross-status rule.
+  const outdatedResolved = indexes.find(index => index.name === 'resolved_domain_unique' && JSON.stringify(index.key) !== JSON.stringify({ domain: 1 }));
   if (legacy) await mongoose.connection.collection('leads').dropIndex(legacy.name);
+  if (outdatedResolved) await mongoose.connection.collection('leads').dropIndex(outdatedResolved.name);
   await Lead.createIndexes();
   indexesMigrated = true;
 }
@@ -28,11 +32,17 @@ const leadSchema = new mongoose.Schema({
   status: { type: String, enum: ['new', 'saved', 'discarded'], default: 'new', index: true },
   searchJobId: { type: mongoose.Schema.Types.ObjectId, ref: 'SearchJob', default: null, index: true },
   category: { type: String, required: true }, location: { type: String, required: true }, keywords: { type: String, default: '' }, isEcommerce: { type: Boolean, required: true },
-  websiteSourceUrl: { type: String, default: null }, emailSourceUrl: { type: String, default: null }, phoneSourceUrl: { type: String, default: null }, discoverySource: { type: String, default: 'gemini_google_search' }, discoveredAt: { type: Date, default: Date.now, index: true }
+  websiteSourceUrl: { type: String, default: null }, emailSourceUrl: { type: String, default: null }, phoneSourceUrl: { type: String, default: null }, discoverySource: { type: String, default: 'gemini_google_search' }, discoveredAt: { type: Date, default: Date.now, index: true },
+  // These are lifecycle timestamps, intentionally independent from discovery time.
+  savedAt: { type: Date, default: null, index: true },
+  notUsefulAt: { type: Date, default: null, index: true }
 }, { timestamps: true, versionKey: false });
-leadSchema.index({ domain: 1, status: 1 }, { unique: true, partialFilterExpression: { status: { $in: ['saved', 'discarded'] } }, name: 'resolved_domain_unique' });
+leadSchema.index({ domain: 1 }, { unique: true, partialFilterExpression: { status: { $in: ['saved', 'discarded'] } }, name: 'resolved_domain_unique' });
 leadSchema.index({ searchJobId: 1, domain: 1 }, { unique: true, partialFilterExpression: { searchJobId: { $type: 'objectId' } }, name: 'job_domain_unique' });
 leadSchema.index({ searchJobId: 1, status: 1, discoveredAt: -1 });
+leadSchema.index({ status: 1, savedAt: -1 });
+leadSchema.index({ status: 1, notUsefulAt: -1 });
+leadSchema.index({ status: 1, discoveredAt: -1, searchJobId: 1 });
 leadSchema.index({ email: 1 });
 
 const jobSchema = new mongoose.Schema({
