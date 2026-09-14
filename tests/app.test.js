@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline } from '../src/app.js';
-import { activeJobFilter, buildDiscoveryPrompt, isTerminalJobStatus, prepareLead } from '../src/services.js';
+import { activeJobFilter, buildDiscoveryPrompt, isTerminalJobStatus, normalizeDiscoveredDomains, prepareLead } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeDomain, normalizeEmail, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 
 test('normalizes domains without losing meaningful subdomains', () => {
@@ -32,6 +32,30 @@ test('discovery targeting retains physical-product e-commerce requirements and w
   assert.match(prompt, /Only if the website has no usable public business email may you use.*social profile.*fallback/i);
   assert.match(prompt, /Never infer, guess, construct, or fabricate an email/i);
   assert.match(prompt, /Google Search grounding and URL Context/i);
+});
+
+test('discovery exclusions are normalized, domain-only, and scoped to the supplied job checkpoint', () => {
+  const jobADomains = normalizeDiscoveredDomains(['https://www.example.com/products', 'http://example.com', 'https://brand.example/contact']);
+  const jobBDomains = normalizeDiscoveredDomains(['https://other.example']);
+  assert.deepEqual(jobADomains, ['example.com', 'brand.example']);
+  assert.deepEqual(jobBDomains, ['other.example']);
+  assert.equal(jobADomains.includes('example-company.com'), false);
+  const prompt = buildDiscoveryPrompt(discoveryInput, 'beauty brands in India', jobADomains);
+  assert.match(prompt, /Previously discovered websites — DO NOT RETURN/);
+  assert.match(prompt, /example\.com\nbrand\.example/);
+  assert.match(prompt, /Do not simply change the URL or page/);
+  assert.doesNotMatch(prompt, /hello@glowgoods\.example\.org/);
+  assert.doesNotMatch(buildDiscoveryPrompt(discoveryInput, 'beauty brands in India', jobBDomains), /example\.com/);
+});
+
+test('discovery checkpoint tracks candidate domains before validation and filters exact repeats locally', () => {
+  const services = fs.readFileSync(new URL('../src/services.js', import.meta.url), 'utf8');
+  const track = services.indexOf("$addToSet: { 'checkpoint.discoveredDomains': candidateDomain }");
+  const validate = services.indexOf('const lead = prepareLead(candidate, job);');
+  assert.ok(track >= 0 && track < validate, 'identifiable domains must persist before lead validation');
+  assert.match(services, /discoveredDomains\.has\(candidateDomain\)/);
+  assert.match(services, /duplicateCount: 1, 'checkpoint\.candidateIndex': 1/);
+  assert.match(services, /discoverWithGemini\(job, variations\(job\).*checkpoint\.discoveredDomains\)/);
 });
 
 test('lead qualification requires a genuine e-commerce business and a non-social official website', () => {
