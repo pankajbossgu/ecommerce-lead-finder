@@ -171,3 +171,21 @@ test('settings deletion rejects invalid ranges and confirmation', async () => {
   assert.throws(() => leadDeletionFilter({ status: 'new', scope: 'custom', from: '2026-02-01', to: '2026-01-31' }), /greater than or equal/);
   await assert.rejects(deleteMatchingLeads(fakeLeadModel(structuredClone(deletionLeads)), { status: 'new', confirmation: 'delete' }), /Type DELETE/);
 });
+
+test('checkpoint recovery writes a lead before moving its durable cursor and guards lease ownership', () => {
+  const services = fs.readFileSync(new URL('../src/services.js', import.meta.url), 'utf8');
+  const create = services.indexOf('created = await Lead.create');
+  const advance = services.indexOf("$inc: { foundCount: 1, 'checkpoint.candidateIndex': 1 }");
+  assert.ok(create >= 0 && advance > create, 'lead creation must precede cursor advancement');
+  assert.match(services, /renewWorkerLease/);
+  assert.match(services, /workerLeaseExpiresAt: \{ \$gt: new Date\(\) \}/);
+  assert.match(services, /await Lead\.deleteOne\(\{ _id: created\._id, status: 'new' \}\)/);
+});
+
+test('client invalidates stale polling callbacks when cancellation completes', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /pollGeneration/);
+  assert.match(client, /generation !== state\.pollGeneration/);
+  assert.match(client, /stopPolling\(\); setDiscoveryRunning\(true, true\)/);
+  assert.match(client, /\$\('#job-progress'\)\.hidden = true/);
+});
