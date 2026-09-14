@@ -104,3 +104,16 @@ api/index.js            Vercel Express entry
 ## Future expansion
 
 `Lead` is a standalone entity suitable for a future campaign reference (`leadId`). Campaigns, email/WhatsApp/SMS sending, sequences, analytics, and automated outreach are deliberately excluded from Phase 1.
+
+## Email campaign delivery (Resend)
+
+Email campaigns require both server-only variables below. `EMAIL_FROM` must use a sender address/domain that is verified in the Resend account associated with `RESEND_API_KEY`; a syntactically valid address alone is not enough for provider acceptance.
+
+| Variable | Required for email campaigns | Purpose |
+| --- | --- | --- |
+| `RESEND_API_KEY` | Yes | Server-only Resend API key. |
+| `EMAIL_FROM` | Yes | Verified Resend sender, such as `LeadScout <outreach@your-verified-domain.com>`. |
+
+For local development, put them in the ignored `.env` file. For Vercel, add both under **Project → Settings → Environment Variables** for every deployed environment (Preview and Production as appropriate), then redeploy. Never put real keys in `.env.example`, browser code, logs, or support screenshots.
+
+If a batch fails, open the campaign detail: each affected recipient shows a safe failure reason and the campaign remains visibly failed or partially delivered rather than silently completing. Check that the sender domain is verified, the recipient address is valid, and the Resend account/quota permits the request. Transient provider/rate-limit failures can be retried from the campaign detail; the persisted recipient idempotency key prevents a retry from intentionally duplicating an already accepted recipient.
