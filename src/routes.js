@@ -12,13 +12,6 @@ const discoveryRateLimit = rateLimit({ windowMs: env.rateLimitWindowMs, limit: e
 const objectId = (id, type) => { if (!mongoose.isValidObjectId(id)) throw new AppError(`${type} not found`, 404, 'NOT_FOUND'); };
 const pagination = (page, limit, total) => ({ page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) });
 const jobPayload = (job, pendingCount = 0) => job && ({ jobId: String(job._id), status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, pendingCount, error: job.errorMessage, createdAt: job.createdAt, startedAt: job.startedAt, completedAt: job.completedAt });
-const lockPayload = (current) => {
-  const running = current.job && ['queued', 'running'].includes(current.job.status);
-  return {
-    active: Boolean(current.job), hasActiveSearch: running, job: jobPayload(current.job, current.pendingCount), pendingCount: current.pendingCount,
-    searchAllowed: !current.job, searchLocked: Boolean(current.job), lockReason: running ? 'search_in_progress' : current.job ? 'pending_review' : null
-  };
-};
 
 async function currentDiscovery({ releaseResolved = false } = {}) {
   let state = await DiscoveryState.findById('current').lean();
@@ -74,7 +67,10 @@ router.post('/discovery/jobs', discoveryRateLimit, async (req, res) => {
   res.status(202).json({ jobId: job.id, status: job.status });
   waitUntil(runDiscovery(job.id));
 });
-router.get('/discovery/current', async (_req, res) => { const current = await currentDiscovery({ releaseResolved: true }); res.json(lockPayload(current)); });
+router.get('/discovery/current', async (_req, res) => {
+  const job = await SearchJob.findOne({ status: { $in: ['queued', 'running'] } }).sort({ createdAt: -1 }).lean();
+  res.json(job ? jobPayload(job) : { jobId: null, status: null });
+});
 router.get('/discovery/jobs/:id', async (req, res) => { objectId(req.params.id, 'Job'); const job = await SearchJob.findById(req.params.id).lean(); if (!job) throw new AppError('Job not found', 404, 'NOT_FOUND'); const pendingCount = await Lead.countDocuments({ searchJobId: job._id, status: 'pending' }); res.json(jobPayload(job, pendingCount)); });
 router.post('/discovery/jobs/:id/cancel', async (req, res) => {
   objectId(req.params.id, 'Job'); await requireCurrentJob(req.params.id);
