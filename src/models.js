@@ -70,6 +70,7 @@ const campaignSchema = new mongoose.Schema({
   emailTemplateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', default: null }, whatsappTemplateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', default: null },
   status: { type: String, enum: ['draft', 'ready', 'sending', 'completed', 'paused', 'failed'], default: 'draft', index: true },
   recipientCount: { type: Number, default: 0 }, emailCount: { type: Number, default: 0 }, whatsappCount: { type: Number, default: 0 }, sentCount: { type: Number, default: 0 }, failedCount: { type: Number, default: 0 }, pendingCount: { type: Number, default: 0 },
+  businessCount: { type: Number, default: 0 }, emailSentCount: { type: Number, default: 0 }, emailFailedCount: { type: Number, default: 0 }, emailPendingCount: { type: Number, default: 0 }, whatsappSentCount: { type: Number, default: 0 }, processedCount: { type: Number, default: 0 }, currentBatch: { type: Number, default: 0 },
   startedAt: Date, completedAt: Date
 }, { timestamps: true, versionKey: false });
 campaignSchema.index({ status: 1, updatedAt: -1 });
@@ -77,7 +78,7 @@ const recipientSchema = new mongoose.Schema({
   campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign', required: true, index: true }, leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead', required: true, index: true },
   channel: { type: String, required: true, enum: ['email', 'whatsapp'] }, recipient: { type: String, required: true, maxlength: 254 }, templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', required: true },
   status: { type: String, enum: ['pending', 'ready', 'sending', 'sent', 'failed', 'skipped', 'manual_sent'], default: 'ready', index: true },
-  sentAt: Date, failedAt: Date, failureReason: { type: String, maxlength: 500 }, providerMessageId: { type: String, maxlength: 200 }, attempts: { type: Number, default: 0 }, idempotencyKey: { type: String, required: true, unique: true, maxlength: 200 }
+  sentAt: Date, failedAt: Date, failureReason: { type: String, maxlength: 500 }, providerMessageId: { type: String, maxlength: 200 }, attempts: { type: Number, default: 0 }, idempotencyKey: { type: String, required: true, unique: true, maxlength: 200 }, batchKey: { type: String, default: null, index: true }, batchNumber: { type: Number, default: null }, sendingLeaseExpiresAt: { type: Date, default: null }
 }, { timestamps: true, versionKey: false });
 recipientSchema.index({ campaignId: 1, leadId: 1, channel: 1 }, { unique: true }); recipientSchema.index({ status: 1, sentAt: -1 });
 const activitySchema = new mongoose.Schema({
