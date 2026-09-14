@@ -11,12 +11,12 @@ const router = Router();
 const discoveryRateLimit = rateLimit({ windowMs: env.rateLimitWindowMs, limit: env.rateLimitMax, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many discovery requests. Please try again later.' } });
 const objectId = (id, type) => { if (!mongoose.isValidObjectId(id)) throw new AppError(`${type} not found`, 404, 'NOT_FOUND'); };
 const pagination = (page, limit, total) => ({ page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) });
-const jobPayload = (job) => job && ({ jobId: String(job._id), status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, error: job.errorMessage, createdAt: job.createdAt, startedAt: job.startedAt, completedAt: job.completedAt });
+const jobPayload = (job, pendingCount = 0) => job && ({ jobId: String(job._id), status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, pendingCount, error: job.errorMessage, createdAt: job.createdAt, startedAt: job.startedAt, completedAt: job.completedAt });
 const lockPayload = (current) => {
   const running = current.job && ['queued', 'running'].includes(current.job.status);
   return {
-    active: Boolean(current.job), hasActiveSearch: Boolean(current.job), job: jobPayload(current.job), pendingCount: current.pendingCount,
-    searchLocked: Boolean(current.job), lockReason: running ? 'search_in_progress' : current.job ? 'pending_review' : null
+    active: Boolean(current.job), hasActiveSearch: running, job: jobPayload(current.job, current.pendingCount), pendingCount: current.pendingCount,
+    searchAllowed: !current.job, searchLocked: Boolean(current.job), lockReason: running ? 'search_in_progress' : current.job ? 'pending_review' : null
   };
 };
 
@@ -57,7 +57,7 @@ async function releaseIfResolved(jobId) {
 router.post('/discovery/jobs', discoveryRateLimit, async (req, res) => {
   const input = parseDiscoveryInput(req.body);
   const before = await currentDiscovery({ releaseResolved: true });
-  if (before.job) throw new AppError(['queued', 'running'].includes(before.job.status) ? 'A discovery search is already in progress.' : `Resolve all pending leads before starting a new search. ${before.pendingCount} leads are waiting for review.`, 409, 'SEARCH_LOCKED');
+  if (before.job) throw new AppError(['queued', 'running'].includes(before.job.status) ? 'A discovery search is already in progress.' : `Resolve all pending leads before starting a new search. ${before.pendingCount} leads are waiting for review.`, 409, ['queued', 'running'].includes(before.job.status) ? 'SEARCH_BLOCKED_ACTIVE_JOB' : 'SEARCH_BLOCKED_PENDING_LEADS');
   // Reserve a generated job id before creating the job. This is the atomic gate:
   // concurrent callers cannot both create queued SearchJob documents.
   const jobId = new mongoose.Types.ObjectId();
@@ -68,19 +68,23 @@ router.post('/discovery/jobs', discoveryRateLimit, async (req, res) => {
     if (error?.code !== 11000) throw error;
     locked = await DiscoveryState.findOneAndUpdate({ _id: 'current', currentJobId: null }, { $set: { currentJobId: jobId } }, { new: true });
   }
-  if (!locked || String(locked.currentJobId) !== String(jobId)) throw new AppError('A discovery search is already in progress or awaiting review.', 409, 'SEARCH_LOCKED');
+  if (!locked || String(locked.currentJobId) !== String(jobId)) throw new AppError('A discovery search is already in progress or awaiting review.', 409, 'SEARCH_BLOCKED_ACTIVE_JOB');
   let job;
   try { job = await SearchJob.create({ _id: jobId, ...input }); } catch (error) { await DiscoveryState.updateOne({ _id: 'current', currentJobId: jobId }, { $set: { currentJobId: null } }); throw error; }
   res.status(202).json({ jobId: job.id, status: job.status });
   waitUntil(runDiscovery(job.id));
 });
 router.get('/discovery/current', async (_req, res) => { const current = await currentDiscovery({ releaseResolved: true }); res.json(lockPayload(current)); });
-router.get('/discovery/jobs/:id', async (req, res) => { objectId(req.params.id, 'Job'); const job = await SearchJob.findById(req.params.id).lean(); if (!job) throw new AppError('Job not found', 404, 'NOT_FOUND'); res.json(jobPayload(job)); });
+router.get('/discovery/jobs/:id', async (req, res) => { objectId(req.params.id, 'Job'); const job = await SearchJob.findById(req.params.id).lean(); if (!job) throw new AppError('Job not found', 404, 'NOT_FOUND'); const pendingCount = await Lead.countDocuments({ searchJobId: job._id, status: 'pending' }); res.json(jobPayload(job, pendingCount)); });
 router.post('/discovery/jobs/:id/cancel', async (req, res) => {
   objectId(req.params.id, 'Job'); await requireCurrentJob(req.params.id);
   const job = await SearchJob.findOneAndUpdate({ _id: req.params.id, status: { $in: ['queued', 'running'] } }, { $set: { status: 'cancelled', completedAt: new Date() } }, { new: true });
   if (!job) throw new AppError('Job cannot be cancelled', 409, 'JOB_NOT_CANCELLABLE');
-  const pendingCount = await releaseIfResolved(job._id); res.json({ jobId: job.id, status: job.status, pendingCount });
+  const pendingCount = await releaseIfResolved(job._id);
+  // A cancelled request may end while Gemini is in flight. Recording this here
+  // makes history durable even if the background callback never runs again.
+  await SearchHistory.updateOne({ searchJobId: job._id }, { $set: { category: job.category, location: job.location, keywords: job.keywords, requestedCount: job.requestedCount, foundCount: job.foundCount, duplicateCount: job.duplicateCount, rejectedCount: job.rejectedCount, status: 'cancelled' } }, { upsert: true });
+  res.json(jobPayload(job, pendingCount));
 });
 router.delete('/discovery/jobs/:id/pending-leads', async (req, res) => {
   objectId(req.params.id, 'Job'); await requireCurrentJob(req.params.id);

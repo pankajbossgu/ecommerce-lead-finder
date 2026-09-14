@@ -9,7 +9,7 @@ A lead is saved only when the candidate has an official business website **and**
 ## Features
 
 - Gemini discovery with Google Search grounding, URL Context, and structured JSON output.
-- Bounded, asynchronous MongoDB-backed discovery jobs with live progress polling and cancellation.
+- Bounded, asynchronous MongoDB-backed discovery jobs with live progress polling, cancellation, and refresh recovery.
 - Deterministic validation of model output, URLs, domains, and public email syntax.
 - Pending leads are persisted review items; saved and discarded decisions are permanent normalized-domain exclusions. Only one unresolved search can exist at a time.
 - Find Leads, Saved Leads, Not Useful, and Search History views in a responsive vanilla HTML/CSS/JavaScript dashboard.
@@ -25,7 +25,9 @@ Discovery is deliberately bounded by `DISCOVERY_MAX_ATTEMPTS` and `DISCOVERY_BAT
 
 Discovered leads start as `pending` and are associated with their persisted `SearchJob`. Pending leads survive refreshes, browser closes, and later visits until they are saved, marked Not Useful (`discarded`), or explicitly cleared. Saved and discarded domains permanently exclude future discovery; clearing pending leads deletes only those pending records, so that domain may be discovered later.
 
-A MongoDB singleton discovery-state document atomically reserves the one unresolved search. A new job is rejected while a job is queued/running or its completed/cancelled job has pending leads. `GET /api/discovery/current` restores the current job, counters, and pending count after a refresh. Pending review supports page-scoped selection, `PATCH /api/leads/bulk-status`, and `DELETE /api/discovery/jobs/:id/pending-leads`; those operations are scoped server-side to the current unresolved job.
+A MongoDB singleton discovery-state document atomically reserves the one unresolved search. A new job is rejected while a job is queued/running (`SEARCH_BLOCKED_ACTIVE_JOB`) or its completed/cancelled job has pending leads (`SEARCH_BLOCKED_PENDING_LEADS`). `GET /api/discovery/current` restores the current job, counters, pending count, and whether a new search is allowed after a refresh. Pending review supports page-scoped selection, `PATCH /api/leads/bulk-status`, and `DELETE /api/discovery/jobs/:id/pending-leads`; those operations are scoped server-side to the current unresolved job.
+
+Search history is retained for every terminal discovery attempt, including completed, failed, and cancelled jobs. Clearing pending leads never deletes history. A cancellation records the request immediately; an in-flight Gemini call can finish naturally, but subsequent passes and candidate inserts stop once cancellation is observed.
 
 The job record survives refresh, but Vercel execution is still bounded by `waitUntil` and the 60-second `maxDuration`. Persistence lets the browser recover the state while execution remains alive; it is not an unlimited durable worker.
 
@@ -51,13 +53,8 @@ Set these values in `.env`:
 | --- | --- | --- |
 | `GEMINI_API_KEY` | Yes | Server-only Gemini API credential. |
 | `MONGODB_URI` | Yes | MongoDB Atlas connection URI; the application selects `ecommerce_lead_finder`. |
-| `NODE_ENV` | Yes | `development` or `production`. |
-| `APP_ORIGIN` | Yes | Comma-separated allowed browser origins. |
-| `LOG_LEVEL` | Yes | Logging verbosity setting. |
-| `DISCOVERY_RATE_LIMIT_WINDOW_MS` | No | Rate-limit window (default 900000). |
-| `DISCOVERY_RATE_LIMIT_MAX` | No | Max jobs per window (default 10). |
-| `DISCOVERY_MAX_ATTEMPTS` | No | Max discovery passes (default 4, capped at 8). |
-| `DISCOVERY_BATCH_SIZE` | No | Candidate batch limit (default 30, capped at 50). |
+
+`APP_ORIGIN` is optional and only needed to allow a separate browser origin; normal Vercel and local same-origin deployment works without it. Bounded rate-limit and discovery settings have safe built-in defaults and are not required in `.env`.
 
 Open `http://localhost:3000`. Production uses `npm start`; tests run with `npm test`, and linting with `npm run lint`.
 
@@ -80,7 +77,7 @@ The safe connection status endpoint is `GET /api/health`. It reports only `ok`/`
 
 ## Discovery and review API
 
-- `POST /api/discovery/jobs` starts the single allowed queued discovery job and returns `409 SEARCH_LOCKED` while another search is running or a pending review queue exists.
+- `POST /api/discovery/jobs` starts the single allowed queued discovery job and returns `409 SEARCH_BLOCKED_ACTIVE_JOB` while another search is running or `409 SEARCH_BLOCKED_PENDING_LEADS` while review is outstanding.
 - `GET /api/discovery/current` returns the persisted job, pending count, `searchLocked`, and lock reason for refresh recovery.
 - `GET /api/discovery/jobs/:id` polls the stored job counters; `POST /api/discovery/jobs/:id/cancel` requests cancellation.
 - `GET /api/leads?status=pending|saved|discarded` lists leads. Pending results are always scoped to the current unresolved job.
