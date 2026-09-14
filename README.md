@@ -11,9 +11,9 @@ A lead is saved only when the candidate has an official business website **and**
 - Gemini discovery with Google Search grounding, URL Context, and structured JSON output.
 - Bounded, asynchronous MongoDB-backed discovery jobs with live progress polling and cancellation.
 - Deterministic validation of model output, URLs, domains, and public email syntax.
-- Pending leads are temporary review items; saved and discarded decisions are permanent normalized-domain exclusions. Only one unresolved search can exist at a time.
+- Pending leads are persisted review items; saved and discarded decisions are permanent normalized-domain exclusions. Only one unresolved search can exist at a time.
 - Find Leads, Saved Leads, Not Useful, and Search History views in a responsive vanilla HTML/CSS/JavaScript dashboard.
-- Search, pagination, restore/save/discard actions, accessible controls, secure headers, CORS, body limits, and discovery endpoint rate limiting.
+- Search, pagination, pending save/discard actions, accessible controls, secure headers, CORS, body limits, and discovery endpoint rate limiting.
 
 ## Architecture
 
@@ -77,6 +77,15 @@ APP_ORIGIN=http://localhost:3000
 If your Atlas URI already specifies a database path, it should be `ecommerce_lead_finder`; the Mongoose connection also explicitly selects that database to prevent accidental writes to `test`, `admin`, or `local`. Replace only `MONGODB_URI` when rotating your Atlas password—no source change is required. Do not put the URI, password, or API key in GitHub.
 
 The safe connection status endpoint is `GET /api/health`. It reports only `ok`/`degraded` and `connected`/`disconnected`; it never returns a connection string, password, or API key.
+
+## Discovery and review API
+
+- `POST /api/discovery/jobs` starts the single allowed queued discovery job and returns `409 SEARCH_LOCKED` while another search is running or a pending review queue exists.
+- `GET /api/discovery/current` returns the persisted job, pending count, `searchLocked`, and lock reason for refresh recovery.
+- `GET /api/discovery/jobs/:id` polls the stored job counters; `POST /api/discovery/jobs/:id/cancel` requests cancellation.
+- `GET /api/leads?status=pending|saved|discarded` lists leads. Pending results are always scoped to the current unresolved job.
+- `PATCH /api/leads/:id/status` and `PATCH /api/leads/bulk-status` only permit `pending → saved` or `pending → discarded` updates. Bulk input accepts 1–100 ObjectIds.
+- `DELETE /api/discovery/jobs/:id/pending-leads` explicitly clears only that current job’s pending leads. It never removes saved/discarded leads or search history.
 
 ## Gemini implementation notes
 
