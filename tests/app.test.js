@@ -288,6 +288,16 @@ test('management history pipeline derives latest independent channel statuses fr
   assert.match(source, /lastContacted/);
 });
 
+test('template deletion uses the outreach modal confirmation instead of a native prompt', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /function confirmTemplateDelete/);
+  assert.match(client, /Delete this template\?/);
+  assert.match(client, /This action cannot be undone/);
+  assert.match(client, /data-confirm-delete-template/);
+  assert.match(client, /api\(`\/api\/templates\/\$\{confirmDeleteTemplate\.dataset\.confirmDeleteTemplate\}`/);
+  assert.doesNotMatch(client, /confirm\(/);
+});
+
 test('campaign deletion and mobile status UI contracts preserve historical states', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
