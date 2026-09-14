@@ -71,3 +71,21 @@ export function assertLeadStatus(status) {
   if (!['new', 'saved', 'discarded'].includes(status)) throw badRequest('Status must be new, saved, or discarded');
   return status;
 }
+
+export function parseDateRange(query, fieldName = 'date') {
+  const parse = (value, label) => {
+    if (value === undefined || value === '') return null;
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw badRequest(`${label} must be a valid YYYY-MM-DD date`);
+    const date = new Date(`${value}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) throw badRequest(`${label} must be a valid date`);
+    return date;
+  };
+  const from = parse(query.from, 'From date'), toDay = parse(query.to, 'To date');
+  if (from && toDay && toDay < from) throw badRequest('To date must be greater than or equal to From date');
+  const to = toDay ? new Date(toDay.getTime() + 86400000) : null;
+  return { from, to, fieldName };
+}
+export function applyDateRange(filter, range) {
+  if (range.from || range.to) filter[range.fieldName] = { ...(range.from ? { $gte: range.from } : {}), ...(range.to ? { $lt: range.to } : {}) };
+  return filter;
+}

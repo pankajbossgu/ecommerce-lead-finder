@@ -43,7 +43,16 @@ export async function runDiscovery(jobId) {
         // cannot exceed requestedCount even if a lease is reclaimed.
         const reserved = await SearchJob.findOneAndUpdate({ ...activeJobFilter(jobId, token), foundCount: { $lt: job.requestedCount }, 'checkpoint.candidateIndex': checkpoint.candidateIndex }, { $inc: { foundCount: 1, 'checkpoint.candidateIndex': 1 } }, { new: true }).lean();
         if (!reserved) break;
-        try { await Lead.create({ ...lead, searchJobId: jobId }); job.foundCount = reserved.foundCount; checkpoint = reserved.checkpoint; continue; }
+        try {
+          const created = await Lead.create({ ...lead, searchJobId: jobId });
+          // Cancellation clears the token. If it won the race with create, remove
+          // this just-created unresolved row so cancelled jobs retain no results.
+          if (!await SearchJob.exists(activeJobFilter(jobId, token))) {
+            await Lead.deleteOne({ _id: created._id, status: 'new' });
+            return;
+          }
+          job.foundCount = reserved.foundCount; checkpoint = reserved.checkpoint; continue;
+        }
         catch (error) {
           // Roll back the reservation only while this worker still owns an active job.
           await SearchJob.updateOne(activeJobFilter(jobId, token), { $inc: { foundCount: -1, duplicateCount: error?.code === 11000 ? 1 : 0 } });
