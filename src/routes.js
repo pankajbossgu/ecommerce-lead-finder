@@ -4,14 +4,14 @@ import mongoose from 'mongoose';
 import { waitUntil } from '@vercel/functions';
 import { env } from './config.js';
 import { DiscoveryState, Lead, SearchHistory, SearchJob } from './models.js';
-import { runDiscovery } from './services.js';
+import { recoverStaleDiscoveries, runDiscovery } from './services.js';
 import { AppError, assertLeadStatus, assertPermanentLeadStatus, parseDiscoveryInput, parsePagination, uniqueObjectIds } from './utils.js';
 
 const router = Router();
 const discoveryRateLimit = rateLimit({ windowMs: env.rateLimitWindowMs, limit: env.rateLimitMax, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many discovery requests. Please try again later.' } });
 const objectId = (id, type) => { if (!mongoose.isValidObjectId(id)) throw new AppError(`${type} not found`, 404, 'NOT_FOUND'); };
 const pagination = (page, limit, total) => ({ page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) });
-const jobPayload = (job, pendingCount = 0) => job && ({ jobId: String(job._id), status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, pendingCount, error: job.errorMessage, createdAt: job.createdAt, startedAt: job.startedAt, completedAt: job.completedAt });
+const jobPayload = (job, pendingCount = 0) => job && ({ jobId: String(job._id), status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, pendingCount, error: job.errorMessage, createdAt: job.createdAt, startedAt: job.startedAt, completedAt: job.completedAt, executionAttempt: job.executionAttempt, workerHeartbeatAt: job.workerHeartbeatAt, workerLeaseUntil: job.workerLeaseUntil, lastError: job.lastError });
 
 async function currentDiscovery({ releaseResolved = false } = {}) {
   let state = await DiscoveryState.findById('current').lean();
@@ -68,18 +68,21 @@ router.post('/discovery/jobs', discoveryRateLimit, async (req, res) => {
   waitUntil(runDiscovery(job.id));
 });
 router.get('/discovery/current', async (_req, res) => {
-  // Recovery is deliberately read-only: only the job holding the singleton
-  // lock, while queued or running, can restore an active client session.
-  const state = await DiscoveryState.findById('current').lean();
-  const job = state?.currentJobId && await SearchJob.findById(state.currentJobId).lean();
-  if (!job || !['queued', 'running'].includes(job.status)) return res.json({ jobId: null, status: null });
-  const pendingCount = await Lead.countDocuments({ status: 'pending', searchJobId: job._id });
-  return res.json(jobPayload(job, pendingCount));
+  // A refresh restores both an active session and a terminal review queue.
+  // Recovery claims only expired leases; it cannot overwrite cancellation.
+  void recoverStaleDiscoveries();
+  const current = await currentDiscovery({ releaseResolved: true });
+  return res.json(current.job ? jobPayload(current.job, current.pendingCount) : { jobId: null, status: null, pendingCount: 0 });
+});
+router.post('/discovery/recover', async (_req, res) => {
+  // Safe for a Vercel cron or an external scheduler: leases make repeats harmless.
+  const recovered = await recoverStaleDiscoveries();
+  res.json({ recovered });
 });
 router.get('/discovery/jobs/:id', async (req, res) => { objectId(req.params.id, 'Job'); const job = await SearchJob.findById(req.params.id).lean(); if (!job) throw new AppError('Job not found', 404, 'NOT_FOUND'); const pendingCount = await Lead.countDocuments({ searchJobId: job._id, status: 'pending' }); res.json(jobPayload(job, pendingCount)); });
 router.post('/discovery/jobs/:id/cancel', async (req, res) => {
   objectId(req.params.id, 'Job'); await requireCurrentJob(req.params.id);
-  const job = await SearchJob.findOneAndUpdate({ _id: req.params.id, status: { $in: ['queued', 'running'] } }, { $set: { status: 'cancelled', completedAt: new Date() } }, { new: true });
+  const job = await SearchJob.findOneAndUpdate({ _id: req.params.id, status: { $in: ['queued', 'running'] } }, { $set: { status: 'cancelled', completedAt: new Date(), workerLeaseUntil: null, workerToken: null } }, { new: true });
   if (!job) throw new AppError('Job cannot be cancelled', 409, 'JOB_NOT_CANCELLABLE');
   await DiscoveryState.updateOne({ _id: 'current' }, { $set: { lastJobId: job._id } });
   const pendingCount = await releaseIfResolved(job._id);

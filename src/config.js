@@ -18,7 +18,9 @@ export const env = Object.freeze({
   rateLimitWindowMs: number('DISCOVERY_RATE_LIMIT_WINDOW_MS', 900000),
   rateLimitMax: number('DISCOVERY_RATE_LIMIT_MAX', 10),
   discoveryMaxAttempts: Math.min(number('DISCOVERY_MAX_ATTEMPTS', 4), 8),
-  discoveryBatchSize: Math.min(number('DISCOVERY_BATCH_SIZE', 30), 50)
+  discoveryBatchSize: Math.min(number('DISCOVERY_BATCH_SIZE', 30), 50),
+  discoveryLeaseMs: Math.max(number('DISCOVERY_LEASE_MS', 45000), 10000),
+  discoveryMaxWorkerAttempts: Math.max(number('DISCOVERY_MAX_WORKER_ATTEMPTS', 3), 1)
 });
 
 let connectPromise;

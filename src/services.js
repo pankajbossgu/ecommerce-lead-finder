@@ -39,40 +39,76 @@ function prepareLead(candidate, input) {
   return { businessName: candidate.businessName.trim().slice(0, 200), domain, website, email, phone: typeof candidate.phone === 'string' && candidate.phone.trim() ? candidate.phone.trim().slice(0, 80) : null, category: input.category, location: input.location, keywords: input.keywords, isEcommerce: true, websiteSourceUrl: isSafePublicUrl(candidate.websiteSourceUrl) ? normalizeUrl(candidate.websiteSourceUrl) : website, emailSourceUrl: normalizeUrl(candidate.emailSourceUrl), phoneSourceUrl: isSafePublicUrl(candidate.phoneSourceUrl) ? normalizeUrl(candidate.phoneSourceUrl) : null, discoverySource: 'gemini_google_search' };
 }
 
-export async function runDiscovery(jobId) {
-  let job = await SearchJob.findById(jobId);
-  if (!job || job.status === 'cancelled') return;
-  const started = await SearchJob.findOneAndUpdate({ _id: jobId, status: 'queued' }, { $set: { status: 'running', startedAt: new Date() } }, { new: true });
-  if (!started) return;
-  const input = started.toObject(); let found = await Lead.countDocuments({ searchJobId: jobId, status: 'pending' }), duplicates = 0, rejected = 0;
-  const wasSeenThisJob = createSeenDomainTracker();
-  const recordHistory = async (status) => SearchHistory.updateOne(
-    { searchJobId: jobId },
-    { $set: { category: input.category, location: input.location, keywords: input.keywords, requestedCount: input.requestedCount, foundCount: found, duplicateCount: duplicates, rejectedCount: rejected, status } },
-    { upsert: true }
+const terminalStatuses = ['completed', 'failed', 'cancelled'];
+const leaseToken = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+async function recordHistory(jobId) {
+  const job = await SearchJob.findById(jobId).lean();
+  if (!job || !terminalStatuses.includes(job.status)) return;
+  await SearchHistory.updateOne({ searchJobId: job._id }, { $set: {
+    category: job.category, location: job.location, keywords: job.keywords,
+    requestedCount: job.requestedCount, foundCount: job.foundCount,
+    duplicateCount: job.duplicateCount, rejectedCount: job.rejectedCount, status: job.status
+  } }, { upsert: true });
+}
+
+async function heartbeat(jobId, token) {
+  const now = new Date();
+  const result = await SearchJob.updateOne(
+    { _id: jobId, status: 'running', workerToken: token },
+    { $set: { workerHeartbeatAt: now, workerLeaseUntil: new Date(now.getTime() + env.discoveryLeaseMs) } }
   );
+  return result.modifiedCount === 1;
+}
+
+// Claiming uses a lease, so a process killed by a serverless runtime can be
+// continued by the next recovery invocation. A token prevents an old worker
+// from completing or failing a job claimed by its replacement.
+export async function runDiscovery(jobId) {
+  const token = leaseToken(); const now = new Date();
+  const claim = await SearchJob.findOneAndUpdate({ _id: jobId, $or: [
+    { status: 'queued' },
+    { status: 'running', workerLeaseUntil: { $lt: now } }
+  ] }, { $set: {
+    status: 'running', startedAt: now, workerToken: token, workerHeartbeatAt: now,
+    workerLeaseUntil: new Date(now.getTime() + env.discoveryLeaseMs), errorMessage: null
+  }, $inc: { executionAttempt: 1, retryCount: 1 } }, { new: true });
+  if (!claim) return;
+  if (claim.executionAttempt > env.discoveryMaxWorkerAttempts) {
+    await SearchJob.updateOne({ _id: jobId, status: 'running', workerToken: token }, { $set: { status: 'failed', completedAt: new Date(), errorMessage: 'Discovery worker exceeded its retry limit.', lastError: 'Worker lease expired too many times.', workerLeaseUntil: null } });
+    await recordHistory(jobId); return;
+  }
+  const input = claim.toObject(); let found = input.foundCount || 0, duplicates = input.duplicateCount || 0, rejected = input.rejectedCount || 0;
+  const wasSeenThisJob = createSeenDomainTracker();
   try {
     for (let attempt = 0; attempt < env.discoveryMaxAttempts && found < input.requestedCount; attempt += 1) {
-      job = await SearchJob.findById(jobId).lean(); if (!job || job.status === 'cancelled') { await recordHistory('cancelled'); return; }
+      if (!await heartbeat(jobId, token)) return;
       const candidates = await discoverWithGemini(input, variations(input)[attempt % variations(input).length]);
+      if (!await heartbeat(jobId, token)) return;
       for (const candidate of candidates) {
         if (found >= input.requestedCount) break;
         const lead = prepareLead(candidate, input);
         if (!lead) { rejected += 1; continue; }
         if (wasSeenThisJob(lead.domain)) { duplicates += 1; continue; }
-        const existing = await Lead.findOne({ domain: lead.domain }).select('status searchJobId').lean();
-        if (existing) { duplicates += 1; continue; }
-        if ((await SearchJob.exists({ _id: jobId, status: { $ne: 'cancelled' } })) === null) { await recordHistory('cancelled'); return; }
+        if (await Lead.exists({ domain: lead.domain })) { duplicates += 1; continue; }
+        // Cancellation or a replacement worker invalidates this write.
+        if (!await SearchJob.exists({ _id: jobId, status: 'running', workerToken: token })) return;
         try { await Lead.create({ ...lead, status: 'pending', searchJobId: jobId }); found += 1; } catch (error) { if (error?.code === 11000) duplicates += 1; else throw error; }
       }
-      await SearchJob.updateOne({ _id: jobId }, { $set: { foundCount: found, duplicateCount: duplicates, rejectedCount: rejected } });
+      if (!await heartbeat(jobId, token)) return;
+      await SearchJob.updateOne({ _id: jobId, status: 'running', workerToken: token }, { $set: { foundCount: found, duplicateCount: duplicates, rejectedCount: rejected } });
     }
-    if ((await SearchJob.findById(jobId))?.status === 'cancelled') { await recordHistory('cancelled'); return; }
-    await SearchJob.updateOne({ _id: jobId }, { $set: { status: 'completed', foundCount: found, duplicateCount: duplicates, rejectedCount: rejected, completedAt: new Date() } });
-    await recordHistory('completed');
+    const complete = await SearchJob.updateOne({ _id: jobId, status: 'running', workerToken: token }, { $set: { status: 'completed', foundCount: found, duplicateCount: duplicates, rejectedCount: rejected, completedAt: new Date(), workerLeaseUntil: null } });
+    if (complete.modifiedCount) await recordHistory(jobId);
   } catch (error) {
     logger.error('Discovery job failed', jobId, error.message);
-    await SearchJob.updateOne({ _id: jobId, status: { $ne: 'cancelled' } }, { $set: { status: 'failed', errorMessage: 'Lead discovery is temporarily unavailable. Please try again.', completedAt: new Date(), foundCount: found, duplicateCount: duplicates, rejectedCount: rejected } });
-    await recordHistory('failed');
+    const failed = await SearchJob.updateOne({ _id: jobId, status: 'running', workerToken: token }, { $set: { status: 'failed', errorMessage: 'Lead discovery is temporarily unavailable. Please try again.', lastError: error.message, completedAt: new Date(), foundCount: found, duplicateCount: duplicates, rejectedCount: rejected, workerLeaseUntil: null } });
+    if (failed.modifiedCount) await recordHistory(jobId);
   }
+}
+
+export async function recoverStaleDiscoveries() {
+  const stale = await SearchJob.find({ $or: [{ status: 'queued' }, { status: 'running', workerLeaseUntil: { $lt: new Date() } }] }).select('_id').limit(10).lean();
+  await Promise.allSettled(stale.map(job => runDiscovery(job._id)));
+  return stale.length;
 }

@@ -17,7 +17,12 @@ const jobSchema = new mongoose.Schema({
   category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number,
   status: { type: String, enum: ['queued', 'running', 'completed', 'failed', 'cancelled'], default: 'queued', index: true },
   foundCount: { type: Number, default: 0 }, duplicateCount: { type: Number, default: 0 }, rejectedCount: { type: Number, default: 0 },
-  startedAt: { type: Date, default: null }, completedAt: { type: Date, default: null }, errorMessage: { type: String, default: null }
+  startedAt: { type: Date, default: null }, completedAt: { type: Date, default: null }, errorMessage: { type: String, default: null },
+  // Durable worker ownership makes an interrupted serverless invocation safe
+  // to resume rather than leaving a job permanently "running".
+  executionAttempt: { type: Number, default: 0 }, workerToken: { type: String, default: null },
+  workerLeaseUntil: { type: Date, default: null, index: true }, workerHeartbeatAt: { type: Date, default: null },
+  retryCount: { type: Number, default: 0 }, lastError: { type: String, default: null }
 }, { timestamps: true, versionKey: false });
 jobSchema.index({ createdAt: -1 });
 
