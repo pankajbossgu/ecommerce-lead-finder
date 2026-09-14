@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 
 const number = (name, fallback) => { const value = Number(process.env[name] ?? fallback); return Number.isFinite(value) ? value : fallback; };
 const databaseName = 'ecommerce_lead_finder';
-export const env = Object.freeze({ nodeEnv: process.env.NODE_ENV || 'development', port: number('PORT', 3000), mongoUri: process.env.MONGODB_URI || '', geminiApiKey: process.env.GEMINI_API_KEY || '', appOrigin: process.env.APP_ORIGIN || '', rateLimitWindowMs: number('DISCOVERY_RATE_LIMIT_WINDOW_MS', 900000), rateLimitMax: number('DISCOVERY_RATE_LIMIT_MAX', 10), discoveryMaxAttempts: Math.min(number('DISCOVERY_MAX_ATTEMPTS', 4), 8), discoveryBatchSize: Math.min(number('DISCOVERY_BATCH_SIZE', 30), 50) });
+export const env = Object.freeze({ nodeEnv: process.env.NODE_ENV || 'development', port: number('PORT', 3000), mongoUri: process.env.MONGODB_URI || '', geminiApiKey: process.env.GEMINI_API_KEY || '', resendApiKey: process.env.RESEND_API_KEY || '', emailFrom: process.env.EMAIL_FROM || '', appOrigin: process.env.APP_ORIGIN || '', rateLimitWindowMs: number('DISCOVERY_RATE_LIMIT_WINDOW_MS', 900000), rateLimitMax: number('DISCOVERY_RATE_LIMIT_MAX', 10), discoveryMaxAttempts: Math.min(number('DISCOVERY_MAX_ATTEMPTS', 4), 8), discoveryBatchSize: Math.min(number('DISCOVERY_BATCH_SIZE', 30), 50) });
 let connectPromise; let indexesMigrated = false;
 async function migrateLegacyDomainIndex() {
   if (indexesMigrated) return;
@@ -58,4 +58,30 @@ const jobSchema = new mongoose.Schema({
 }, { timestamps: true, versionKey: false });
 jobSchema.index({ createdAt: -1 }); jobSchema.index({ status: 1, workerLeaseExpiresAt: 1 }); jobSchema.index({ openLock: 1 }, { unique: true, partialFilterExpression: { status: { $in: ['queued', 'running'] } }, name: 'one_active_discovery_job' });
 const historySchema = new mongoose.Schema({ category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number, foundCount: Number }, { timestamps: true, versionKey: false }); historySchema.index({ createdAt: -1 });
-export const Lead = mongoose.model('Lead', leadSchema); export const SearchJob = mongoose.model('SearchJob', jobSchema); export const SearchHistory = mongoose.model('SearchHistory', historySchema);
+const templateSchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true, maxlength: 120 },
+  type: { type: String, required: true, enum: ['email', 'whatsapp'], index: true },
+  subject: { type: String, default: null, maxlength: 200 },
+  body: { type: String, required: true, maxlength: 10000 }
+}, { timestamps: true, versionKey: false });
+templateSchema.index({ type: 1, updatedAt: -1 });
+const campaignSchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true, maxlength: 120 }, channels: [{ type: String, enum: ['email', 'whatsapp'] }],
+  emailTemplateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', default: null }, whatsappTemplateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', default: null },
+  status: { type: String, enum: ['draft', 'ready', 'sending', 'completed', 'paused', 'failed'], default: 'draft', index: true },
+  recipientCount: { type: Number, default: 0 }, emailCount: { type: Number, default: 0 }, whatsappCount: { type: Number, default: 0 }, sentCount: { type: Number, default: 0 }, failedCount: { type: Number, default: 0 }, pendingCount: { type: Number, default: 0 },
+  startedAt: Date, completedAt: Date
+}, { timestamps: true, versionKey: false });
+campaignSchema.index({ status: 1, updatedAt: -1 });
+const recipientSchema = new mongoose.Schema({
+  campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign', required: true, index: true }, leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead', required: true, index: true },
+  channel: { type: String, required: true, enum: ['email', 'whatsapp'] }, recipient: { type: String, required: true, maxlength: 254 }, templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', required: true },
+  status: { type: String, enum: ['pending', 'ready', 'sending', 'sent', 'failed', 'skipped', 'manual_sent'], default: 'ready', index: true },
+  sentAt: Date, failedAt: Date, failureReason: { type: String, maxlength: 500 }, providerMessageId: { type: String, maxlength: 200 }, attempts: { type: Number, default: 0 }, idempotencyKey: { type: String, required: true, unique: true, maxlength: 200 }
+}, { timestamps: true, versionKey: false });
+recipientSchema.index({ campaignId: 1, leadId: 1, channel: 1 }, { unique: true }); recipientSchema.index({ status: 1, sentAt: -1 });
+const activitySchema = new mongoose.Schema({
+  leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead', required: true, index: true }, campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign', required: true, index: true }, channel: { type: String, enum: ['email', 'whatsapp'], required: true, index: true }, templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', default: null }, recipient: { type: String, required: true }, subject: { type: String, default: null, maxlength: 200 }, status: { type: String, enum: ['sent', 'manual_sent', 'failed', 'skipped'], required: true, index: true }, sentAt: Date, failedAt: Date, failureReason: { type: String, maxlength: 500 }, providerMessageId: { type: String, maxlength: 200 }, nextFollowUpAt: { type: Date, default: null }
+}, { timestamps: true, versionKey: false });
+activitySchema.index({ leadId: 1, sentAt: -1, createdAt: -1 }); activitySchema.index({ campaignId: 1, createdAt: -1 }); activitySchema.index({ channel: 1, status: 1, sentAt: -1 });
+export const Lead = mongoose.model('Lead', leadSchema); export const SearchJob = mongoose.model('SearchJob', jobSchema); export const SearchHistory = mongoose.model('SearchHistory', historySchema); export const OutreachTemplate = mongoose.model('OutreachTemplate', templateSchema); export const Campaign = mongoose.model('Campaign', campaignSchema); export const CampaignRecipient = mongoose.model('CampaignRecipient', recipientSchema); export const OutreachActivity = mongoose.model('OutreachActivity', activitySchema);
