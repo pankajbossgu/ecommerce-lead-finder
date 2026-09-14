@@ -25,7 +25,7 @@ Discovery is deliberately bounded by `DISCOVERY_MAX_ATTEMPTS` and `DISCOVERY_BAT
 
 - Node.js 20+
 - MongoDB (local or Atlas)
-- Gemini API key with access to the configured model and Google Search grounding
+- Gemini API key with access to Gemini 3.1 Flash-Lite and Google Search grounding
 
 ## Setup
 
@@ -43,7 +43,6 @@ Set these values in `.env`:
 | --- | --- | --- |
 | `GEMINI_API_KEY` | Yes | Server-only Gemini API credential. |
 | `MONGODB_URI` | Yes | MongoDB Atlas connection URI; the application selects `ecommerce_lead_finder`. |
-| `GEMINI_MODEL` | Yes | Gemini model; default example is `gemini-2.5-flash`. |
 | `NODE_ENV` | Yes | `development` or `production`. |
 | `APP_ORIGIN` | Yes | Comma-separated allowed browser origins. |
 | `LOG_LEVEL` | Yes | Logging verbosity setting. |
@@ -63,7 +62,6 @@ Create a local `.env` from `.env.example` and supply your own secret values (the
 ```dotenv
 MONGODB_URI=mongodb+srv://pankajsingh989980_db_user:<URL-ENCODED-PASSWORD>@<cluster-host>/ecommerce_lead_finder?retryWrites=true&w=majority
 GEMINI_API_KEY=<your-gemini-api-key>
-GEMINI_MODEL=gemini-2.5-flash
 NODE_ENV=development
 APP_ORIGIN=http://localhost:3000
 ```
@@ -74,14 +72,14 @@ The safe connection status endpoint is `GET /api/health`. It reports only `ok`/`
 
 ## Gemini implementation notes
 
-The Gemini service uses the official `@google/genai` SDK and `models.generateContent`, configured with `googleSearch`, `urlContext`, `responseMimeType: "application/json"`, and a response JSON schema. The prompt requires official websites, public-email source evidence, e-commerce relevance, and no invented contact data. Direct website crawling is intentionally not used: grounding and URL Context keep the initial release bounded and avoid aggressive fetching.
+The Gemini service uses the official `@google/genai` SDK and `models.generateContent` with the fixed `gemini-3.1-flash-lite` model, configured with `googleSearch`, `urlContext`, `responseMimeType: "application/json"`, and a response JSON schema. The prompt requires official websites, public-email source evidence, e-commerce relevance, and no invented contact data. Direct website crawling is intentionally not used: grounding and URL Context keep the initial release bounded and avoid aggressive fetching.
 
-Availability of Google Search grounding and URL Context depends on the selected model, API key, quota, and Google’s current regional/product availability. Configure a supported `GEMINI_MODEL` in Vercel if the provided default is not available to your account.
+Availability of Google Search grounding and URL Context depends on Gemini 3.1 Flash-Lite, the API key, quota, and Google’s current regional/product availability.
 
 ## Vercel deployment
 
 1. Import the repository into Vercel.
-2. In **Project → Settings → Environment Variables**, add `MONGODB_URI`, `GEMINI_API_KEY`, and `GEMINI_MODEL`; set `NODE_ENV=production` and `APP_ORIGIN` to the production Vercel URL.
+2. In **Project → Settings → Environment Variables**, add `MONGODB_URI` and `GEMINI_API_KEY`; set `NODE_ENV=production` and `APP_ORIGIN` to the production Vercel URL.
 3. Deploy. `api/index.js` exports the Express app and sets a 60-second maximum duration; `vercel.json` rewrites requests through the Express entry point.
 4. Use MongoDB Atlas or another MongoDB endpoint reachable from Vercel.
 
