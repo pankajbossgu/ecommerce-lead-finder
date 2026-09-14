@@ -68,18 +68,13 @@ router.post('/discovery/jobs', discoveryRateLimit, async (req, res) => {
   waitUntil(runDiscovery(job.id));
 });
 router.get('/discovery/current', async (_req, res) => {
-  // The singleton is the durable owner of the one current search. Looking up
-  // the newest running job can recover an unrelated orphan instead of the job
-  // that currently holds the discovery lock.
-  const current = await currentDiscovery();
-  if (current.job) return res.json(jobPayload(current.job, current.pendingCount));
-  // The lock is released after a cancelled search with no pending leads. Keep
-  // its terminal result recoverable long enough for a page refresh to show the
-  // authoritative cancellation state instead of a client-side searching view.
+  // Recovery is deliberately read-only: only the job holding the singleton
+  // lock, while queued or running, can restore an active client session.
   const state = await DiscoveryState.findById('current').lean();
-  const lastJob = state?.lastJobId && await SearchJob.findById(state.lastJobId).lean();
-  if (lastJob?.status === 'cancelled') return res.json(jobPayload(lastJob));
-  return res.json({ jobId: null, status: null });
+  const job = state?.currentJobId && await SearchJob.findById(state.currentJobId).lean();
+  if (!job || !['queued', 'running'].includes(job.status)) return res.json({ jobId: null, status: null });
+  const pendingCount = await Lead.countDocuments({ status: 'pending', searchJobId: job._id });
+  return res.json(jobPayload(job, pendingCount));
 });
 router.get('/discovery/jobs/:id', async (req, res) => { objectId(req.params.id, 'Job'); const job = await SearchJob.findById(req.params.id).lean(); if (!job) throw new AppError('Job not found', 404, 'NOT_FOUND'); const pendingCount = await Lead.countDocuments({ searchJobId: job._id, status: 'pending' }); res.json(jobPayload(job, pendingCount)); });
 router.post('/discovery/jobs/:id/cancel', async (req, res) => {
