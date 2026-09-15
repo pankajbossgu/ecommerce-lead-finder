@@ -48,6 +48,17 @@ const workerLease = () => new Date(Date.now() + 55_000);
 async function renewWorkerLease(jobId, token) {
   return SearchJob.findOneAndUpdate(ownedWorkerFilter(jobId, token), { $set: { workerLeaseExpiresAt: workerLease() } }, { new: true }).lean();
 } export const isTerminalJobStatus = status => ['completed', 'failed', 'cancelled'].includes(status); export const resolvedDuplicateFilter = domain => ({ domain, status: { $in: ['saved', 'discarded'] } });
+export function duplicateReasonForLead(lead, matches = [], jobId = null) {
+  const domainDuplicate = matches.some(match => match.domain === lead.domain && (['saved', 'discarded'].includes(match.status) || (jobId && String(match.searchJobId) === String(jobId))));
+  const emailDuplicate = matches.some(match => normalizeEmail(match.emailNormalized || match.email) === lead.email);
+  return domainDuplicate && emailDuplicate ? 'duplicate_domain_and_email' : domainDuplicate ? 'duplicate_domain' : emailDuplicate ? 'duplicate_email' : null;
+}
+export async function findLeadDuplicateReason(lead, jobId = null, excludeId = null) {
+  const filter = { $or: [{ domain: lead.domain, status: { $in: ['saved', 'discarded'] } }, ...(jobId ? [{ searchJobId: jobId, domain: lead.domain }] : []), { emailNormalized: lead.email }, { email: lead.email }] };
+  if (excludeId) filter._id = { $ne: excludeId };
+  const matches = await Lead.find(filter).select('domain email emailNormalized status searchJobId').lean();
+  return duplicateReasonForLead(lead, matches, jobId);
+}
 export async function runDiscovery(jobId) {
   const now = new Date(), token = crypto.randomUUID();
   const job = await SearchJob.findOneAndUpdate({ _id: jobId, status: { $in: ['queued', 'running'] }, $or: [{ workerLeaseExpiresAt: null }, { workerLeaseExpiresAt: { $lte: now } }] }, { $set: { status: 'running', workerToken: token, workerLeaseExpiresAt: workerLease(), startedAt: now } }, { new: true }).lean();
@@ -104,31 +115,34 @@ export async function runDiscovery(jobId) {
       const lead = prepareLead(candidate, job);
       let update = { $inc: { 'checkpoint.candidateIndex': 1 } };
       if (!lead) update.$inc.rejectedCount = 1;
-      else if (await Lead.exists({ $or: [resolvedDuplicateFilter(lead.domain), { searchJobId: jobId, domain: lead.domain }] })) update.$inc.duplicateCount = 1;
       else {
-        // The lease is renewed immediately before the insert. A stale worker cannot
-        // advance a cursor or finalise; a recovered insert is reconciled on retry.
-        let created;
-        try {
-          created = await Lead.create({ ...lead, searchJobId: jobId });
-        } catch (error) {
-          if (error?.code !== 11000) throw error;
-          update.$inc.duplicateCount = 1;
-        }
-        if (created) {
-          const advanced = await SearchJob.findOneAndUpdate(
-            { ...ownedWorkerFilter(jobId, token), foundCount: { $lt: job.requestedCount }, 'checkpoint.candidateIndex': checkpoint.candidateIndex },
-            { $inc: { foundCount: 1, 'checkpoint.candidateIndex': 1 } }, { new: true }
-          ).lean();
-          if (!advanced) {
-            // Cancellation or a lost lease won the race. Do not leave an orphaned
-            // unresolved result for a worker that no longer has authority.
-            await Lead.deleteOne({ _id: created._id, status: 'new' });
-            return;
+        const duplicateReason = await findLeadDuplicateReason(lead, jobId);
+        if (duplicateReason) update.$inc.duplicateCount = 1;
+        else {
+          // The lease is renewed immediately before the insert. A stale worker cannot
+          // advance a cursor or finalise; a recovered insert is reconciled on retry.
+          let created;
+          try {
+            created = await Lead.create({ ...lead, searchJobId: jobId });
+          } catch (error) {
+            if (error?.code !== 11000) throw error;
+            update.$inc.duplicateCount = 1;
           }
-          job.foundCount = advanced.foundCount;
-          checkpoint = advanced.checkpoint;
-          continue;
+          if (created) {
+            const advanced = await SearchJob.findOneAndUpdate(
+              { ...ownedWorkerFilter(jobId, token), foundCount: { $lt: job.requestedCount }, 'checkpoint.candidateIndex': checkpoint.candidateIndex },
+              { $inc: { foundCount: 1, 'checkpoint.candidateIndex': 1 } }, { new: true }
+            ).lean();
+            if (!advanced) {
+              // Cancellation or a lost lease won the race. Do not leave an orphaned
+              // unresolved result for a worker that no longer has authority.
+              await Lead.deleteOne({ _id: created._id, status: 'new' });
+              return;
+            }
+            job.foundCount = advanced.foundCount;
+            checkpoint = advanced.checkpoint;
+            continue;
+          }
         }
       }
       const advanced = await SearchJob.findOneAndUpdate({ ...ownedWorkerFilter(jobId, token), 'checkpoint.candidateIndex': checkpoint.candidateIndex }, update, { new: true }).lean();

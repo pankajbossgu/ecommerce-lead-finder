@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { authRoutes, isAuthenticated, requireAuth, requireDashboardAuth } from './auth.js';
 import { connectDatabase, env, Lead, SearchHistory, SearchJob, OutreachTemplate, Campaign, CampaignRecipient, OutreachActivity } from './models.js';
 import { sendEmailBatch } from './services/email.js';
-import { runDiscovery } from './services.js';
+import { findLeadDuplicateReason, runDiscovery } from './services.js';
 import { AppError, applyDateRange, assertLeadStatus, isSafePublicUrl, isValidPublicEmail, logger, normalizeDomain, normalizeEmail, normalizePhone, normalizeUrl, parseDateRange, parseDiscoveryInput, parsePagination } from './utils.js';
 
 const app = express();
@@ -95,11 +95,10 @@ function manualLeadInput(body) {
   if (!website || !domain || !isSafePublicUrl(website)) throw new AppError('Website must be a valid public URL', 400, 'VALIDATION_ERROR');
   const rawEmail = typeof body?.email === 'string' ? body.email.trim() : '';
   const email = rawEmail ? normalizeEmail(rawEmail) : null;
-  if (email && !isValidPublicEmail(email)) throw new AppError('Email must be a valid business email', 400, 'VALIDATION_ERROR');
+  if (!email || !isValidPublicEmail(email)) throw new AppError('Email must be a valid business email', 400, 'VALIDATION_ERROR');
   const rawPhone = typeof body?.phone === 'string' ? body.phone.trim() : '';
   const phone = rawPhone ? normalizePhone(rawPhone) : null;
   if (rawPhone && !phone) throw new AppError('Phone must be a valid phone number', 400, 'VALIDATION_ERROR');
-  if (!email && !phone) throw new AppError('Add an email address or phone number', 400, 'VALIDATION_ERROR');
   return { businessName, website, domain, email, phone, category: cleanText(body?.category, 'Category', 100), location: cleanText(body?.location, 'Location', 100), notes: cleanText(body?.notes, 'Notes', 2000, false) || '', status: 'saved', savedAt: new Date(), searchJobId: null, discoverySource: 'manual', isEcommerce: true };
 }
 export function managementPipeline(query) {
@@ -209,8 +208,15 @@ app.get('/api/leads/export', async (req, res) => {
   res.end();
 });
 app.post('/api/leads/manual', async (req, res) => {
-  const lead = await Lead.create(manualLeadInput(req.body));
-  res.status(201).json(lead);
+  const input = manualLeadInput(req.body);
+  if (await findLeadDuplicateReason(input)) throw new AppError('A lead with this website or email already exists', 409, 'DUPLICATE_LEAD');
+  try {
+    const lead = await Lead.create(input);
+    res.status(201).json(lead);
+  } catch (error) {
+    if (error?.code === 11000) throw new AppError('A lead with this website or email already exists', 409, 'DUPLICATE_LEAD');
+    throw error;
+  }
 });
 app.get('/api/leads/:id', async (req, res) => {
   objectId(req.params.id, 'Lead');
@@ -220,8 +226,14 @@ app.get('/api/leads/:id', async (req, res) => {
 });
 app.patch('/api/leads/:id/status', async (req, res) => {
   objectId(req.params.id, 'Lead'); const status = assertLeadStatus(req.body?.status);
-  const timestamp = statusTimestamp(status); const update = { $set: { status, savedAt: timestamp === 'savedAt' ? new Date() : null, notUsefulAt: timestamp === 'notUsefulAt' ? new Date() : null } };
-  const lead = await Lead.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
+  const existing = await Lead.findById(req.params.id).lean();
+  if (!existing) throw new AppError('Lead not found', 404, 'NOT_FOUND');
+  if (status === 'saved' && !isValidPublicEmail(existing.email)) throw new AppError('A saved lead requires a valid business email', 409, 'LEAD_EMAIL_REQUIRED');
+  const normalizedEmail = normalizeEmail(existing.email);
+  if (status === 'saved' && (existing.legacyEmailDuplicateOf || await findLeadDuplicateReason({ domain: existing.domain, email: normalizedEmail }, existing.searchJobId, existing._id))) throw new AppError('A lead with this website or email already exists', 409, 'DUPLICATE_LEAD');
+  const timestamp = statusTimestamp(status); const update = { $set: { status, email: normalizedEmail, emailNormalized: normalizedEmail, savedAt: timestamp === 'savedAt' ? new Date() : null, notUsefulAt: timestamp === 'notUsefulAt' ? new Date() : null } };
+  let lead;
+  try { lead = await Lead.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean(); } catch (error) { if (error?.code === 11000) throw new AppError('A lead with this website or email already exists', 409, 'DUPLICATE_LEAD'); throw error; }
   if (!lead) throw new AppError('Lead not found', 404, 'NOT_FOUND'); res.json(lead);
 });
 app.delete('/api/leads/:id', async (req, res) => {
@@ -233,7 +245,25 @@ app.post('/api/leads/bulk', async (req, res) => {
   if (!ids.length || ids.length > 100 || !ids.every(mongoose.isValidObjectId)) throw new AppError('Choose one to 100 valid leads', 400, 'VALIDATION_ERROR');
   if (!['saved', 'discarded', 'delete'].includes(action)) throw new AppError('Unsupported bulk action', 400, 'VALIDATION_ERROR');
   const filter = { _id: { $in: ids }, status: 'new' };
-  const timestamp = statusTimestamp(action); const result = action === 'delete' ? await Lead.deleteMany(filter) : await Lead.updateMany(filter, { $set: { status: action, savedAt: timestamp === 'savedAt' ? new Date() : null, notUsefulAt: timestamp === 'notUsefulAt' ? new Date() : null } }, { runValidators: true });
+  let result;
+  if (action === 'delete') result = await Lead.deleteMany(filter);
+  else if (action === 'discarded') result = await Lead.updateMany(filter, { $set: { status: action, savedAt: null, notUsefulAt: new Date() } }, { runValidators: true });
+  else {
+    const candidates = await Lead.find(filter).lean();
+    if (candidates.length !== ids.length) throw new AppError('The selected unresolved leads are no longer available', 409, 'LEADS_NOT_ACTIONABLE');
+    for (const candidate of candidates) {
+      const email = normalizeEmail(candidate.email);
+      if (!isValidPublicEmail(email)) throw new AppError('A saved lead requires a valid business email', 409, 'LEAD_EMAIL_REQUIRED');
+      if (candidate.legacyEmailDuplicateOf || await findLeadDuplicateReason({ domain: candidate.domain, email }, candidate.searchJobId, candidate._id)) throw new AppError('A lead with this website or email already exists', 409, 'DUPLICATE_LEAD');
+    }
+    try {
+      const updates = await Promise.all(candidates.map(candidate => Lead.updateOne({ _id: candidate._id, status: 'new' }, { $set: { status: 'saved', email: normalizeEmail(candidate.email), emailNormalized: normalizeEmail(candidate.email), savedAt: new Date(), notUsefulAt: null } }, { runValidators: true })));
+      result = { modifiedCount: updates.reduce((count, update) => count + update.modifiedCount, 0) };
+    } catch (error) {
+      if (error?.code === 11000) throw new AppError('A lead with this website or email already exists', 409, 'DUPLICATE_LEAD');
+      throw error;
+    }
+  }
   const changed = result.deletedCount ?? result.modifiedCount;
   if (!changed) throw new AppError('The selected unresolved leads are no longer available', 409, 'LEADS_NOT_ACTIONABLE');
   res.json({ changed });
@@ -309,9 +339,11 @@ app.post('/api/campaigns/:id/recipients', async (req, res) => {
   let created = 0; let seen = 0; let batch = [];
   const saveBatch = async leads => {
     if (!leads.length) return; seen += leads.length;
-    const activities = await OutreachActivity.find({ leadId: { $in: leads.map(l => l._id) }, status: { $in: ['sent', 'manual_sent'] } }).lean();
+    const emails = leads.map(lead => normalizeEmail(lead.email)).filter(Boolean);
+    const activities = await OutreachActivity.find({ status: { $in: ['sent', 'manual_sent'] }, $or: [{ leadId: { $in: leads.map(l => l._id) } }, ...(emails.length ? [{ channel: 'email', recipientNormalized: { $in: emails } }] : [])] }).lean();
     const contacted = new Set(activities.map(activity => `${activity.leadId}:${activity.channel}`));
-    const docs = leads.flatMap(lead => campaign.channels.map(channel => ({ lead, channel })).filter(({ lead, channel }) => (channel === 'email' ? lead.email : lead.phone) && (req.body?.includeContacted === true || !contacted.has(`${lead._id}:${channel}`))).map(({ lead, channel }) => ({ campaignId: campaign._id, leadId: lead._id, channel, recipient: channel === 'email' ? lead.email : lead.phone, templateId: channel === 'email' ? campaign.emailTemplateId : campaign.whatsappTemplateId, status: 'ready', idempotencyKey: `campaign:${campaign._id}:lead:${lead._id}:channel:${channel}` })));
+    const contactedEmails = new Set(activities.filter(activity => activity.channel === 'email').map(activity => normalizeEmail(activity.recipientNormalized || activity.recipient)).filter(Boolean));
+    const docs = leads.flatMap(lead => campaign.channels.map(channel => ({ lead, channel })).filter(({ lead, channel }) => (channel === 'email' ? lead.email : lead.phone) && (req.body?.includeContacted === true || (channel === 'email' ? !contactedEmails.has(normalizeEmail(lead.email)) : !contacted.has(`${lead._id}:${channel}`)))).map(({ lead, channel }) => ({ campaignId: campaign._id, leadId: lead._id, channel, recipient: channel === 'email' ? lead.email : lead.phone, templateId: channel === 'email' ? campaign.emailTemplateId : campaign.whatsappTemplateId, status: 'ready', idempotencyKey: `campaign:${campaign._id}:lead:${lead._id}:channel:${channel}` })));
     if (docs.length) { const result = await CampaignRecipient.bulkWrite(docs.map(doc => ({ updateOne: { filter: { campaignId: doc.campaignId, leadId: doc.leadId, channel: doc.channel }, update: { $setOnInsert: doc }, upsert: true } }))); created += result.upsertedCount || 0; }
   };
   const cursor = Lead.aggregate(selectedLeadPipeline(req.body)).cursor({ batchSize: 100 });
