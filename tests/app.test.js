@@ -493,3 +493,17 @@ test('campaign mailbox persistence is isolated and reply recipients are server c
   assert.match(app, /inReplyTo: normalizedMessageId\(parent\.messageId\), references/);
   assert.match(inbox, /headers: \{ 'Message-ID': rfcMessageId \}/);
 });
+
+test('mailbox accepts inbound mail only through the webhook and exposes no manual sync path', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const inbox = fs.readFileSync(new URL('../src/services/inbox.js', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(app, /event\.type !== 'email\.received'/);
+  assert.match(app, /persistReceived\(await receiveEmail\(emailId\)/);
+  assert.match(inbox, /resendRequest\(`\/emails\/receiving\/\$\{encodeURIComponent\(id\)\}`/);
+  assert.doesNotMatch(app, /\/api\/mailbox\/sync|listReceived/);
+  assert.doesNotMatch(inbox, /listReceived|\/emails\/receiving\?limit=/);
+  assert.doesNotMatch(client, /mailbox-sync|\/api\/mailbox\/sync/);
+  assert.doesNotMatch(html, /mailbox-sync|>Sync</);
+});
