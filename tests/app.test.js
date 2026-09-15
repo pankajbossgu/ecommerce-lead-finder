@@ -448,3 +448,25 @@ test('saved lead all-matching selection survives pagination and retains the camp
   assert.match(app, /body\?\.selectAllMatching === true/);
   assert.match(app, /excludedLeadIds/);
 });
+
+test('mailbox uses fixed 25-email server pages and current-page soft-delete selection', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(app, /const mailboxPage = query => \(\{ page: Math\.max\(1, Math\.floor\(Number\(query\.page\) \|\| 1\)\), limit: 25 \}\)/);
+  assert.match(app, /\$unionWith/); assert.match(app, /\$skip: \(page - 1\) \* limit/); assert.match(app, /\$limit: limit/);
+  assert.match(app, /app\.post\('\/api\/mailbox\/messages\/delete', mailboxRateLimit/);
+  assert.match(app, /deletedAt: null/); assert.match(app, /ids\.length > 25/);
+  assert.match(client, /limit: 25/); assert.match(client, /data-mailbox-page/); assert.match(client, /mailbox-select-all/);
+  assert.match(client, /mailboxSelected/); assert.match(client, /data-confirm-mailbox-delete/);
+});
+
+test('campaign mailbox persistence is isolated and reply recipients are server controlled', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const inbox = fs.readFileSync(new URL('../src/services/inbox.js', import.meta.url), 'utf8');
+  assert.match(app, /await repairCampaignMailboxEmails\(campaign\)/);
+  assert.match(app, /mailboxPersistencePending: true/);
+  assert.match(app, /Campaign mailbox persistence failed/);
+  assert.match(app, /to: \[external\], cc: \[\], bcc: \[\], subject: `Re: \$\{originalSubject\}`/);
+  assert.match(app, /inReplyTo: normalizedMessageId\(parent\.messageId\), references/);
+  assert.match(inbox, /headers: \{ 'Message-ID': rfcMessageId \}/);
+});
