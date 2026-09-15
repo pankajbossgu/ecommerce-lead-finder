@@ -49,6 +49,7 @@ export function isSafePublicUrl(value) {
   return host !== 'localhost' && host !== '::1' && !/^127\./.test(host) && !/^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
 }
 const allowedCounts = new Set([20, 30, 40, 50, 60, 70, 80, 90, 100]);
+export const discoveryModes = new Set(['hybrid', 'website', 'social']);
 const clean = (value, max, name, required = false) => {
   if (typeof value !== 'string') { if (required) throw badRequest(`${name} is required`); return ''; }
   const result = value.trim().replace(/\s+/g, ' ');
@@ -59,7 +60,9 @@ const clean = (value, max, name, required = false) => {
 export function parseDiscoveryInput(body) {
   const requestedCount = Number(body.requestedCount);
   if (!Number.isInteger(requestedCount) || !allowedCounts.has(requestedCount)) throw badRequest('Number of leads must be one of 20 through 100 in increments of 10');
-  return { category: clean(body.category, 100, 'Category', true), location: clean(body.location, 100, 'Location', true), keywords: clean(body.keywords, 200, 'Keywords'), requestedCount };
+  const mode = body?.mode == null || body.mode === '' ? 'hybrid' : body.mode;
+  if (typeof mode !== 'string' || !discoveryModes.has(mode)) throw badRequest('Discovery source must be hybrid, website, or social');
+  return { category: clean(body.category, 100, 'Category', true), location: clean(body.location, 100, 'Location', true), keywords: clean(body.keywords, 200, 'Keywords'), requestedCount, mode };
 }
 export function parsePagination(query) {
   const page = Number(query.page ?? 1), limit = Number(query.limit ?? 25);

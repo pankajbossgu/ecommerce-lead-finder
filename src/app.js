@@ -147,13 +147,15 @@ app.use('/api', async (_req, _res, next) => {
   }
 });
 
+const discoveryJobResponse = job => ({ jobId: String(job._id || job.id), status: job.status, mode: job.mode || 'hybrid', requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, error: job.errorMessage, checkpoint: job.checkpoint, discoveryProgress: job.discoveryProgress, createdAt: job.createdAt, completedAt: job.completedAt });
+
 app.post('/api/discovery/jobs', discoveryRateLimit, async (req, res) => {
   const unresolved = await Lead.exists({ status: 'new' });
   const active = await SearchJob.findOne({ status: { $in: ['queued', 'running'] } }).sort({ createdAt: -1 }).lean();
   if (active || unresolved) throw new AppError(active ? 'A discovery job is already in progress' : 'Process or clear every new lead before starting another search', 409, 'UNRESOLVED_LEADS');
   try {
     const job = await SearchJob.create(parseDiscoveryInput(req.body));
-    res.status(202).json({ jobId: job.id, status: job.status });
+    res.status(202).json(discoveryJobResponse(job));
   } catch (error) {
     if (error?.code === 11000) throw new AppError('A discovery job is already in progress', 409, 'ACTIVE_JOB_EXISTS');
     throw error;
@@ -164,7 +166,7 @@ app.get('/api/discovery/current', async (_req, res) => {
   const job = active || await SearchJob.findOne({ _id: { $in: await Lead.distinct('searchJobId', { status: 'new', searchJobId: { $ne: null } }) } }).sort({ createdAt: -1 }).lean();
   if (!job) return res.json({ job: null, unresolvedCount: 0 });
   const unresolvedCount = await Lead.countDocuments({ searchJobId: job._id, status: 'new' });
-  res.json({ job: { jobId: String(job._id), status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, error: job.errorMessage, checkpoint: job.checkpoint }, unresolvedCount });
+  res.json({ job: discoveryJobResponse(job), unresolvedCount });
 });
 app.get('/api/discovery/jobs/:id', async (req, res) => {
   objectId(req.params.id, 'Job');
@@ -173,7 +175,7 @@ app.get('/api/discovery/jobs/:id', async (req, res) => {
   await runDiscovery(req.params.id);
   const job = await SearchJob.findById(req.params.id).lean();
   if (!job) throw new AppError('Job not found', 404, 'NOT_FOUND');
-  res.json({ jobId: String(job._id), status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, error: job.errorMessage, checkpoint: job.checkpoint, createdAt: job.createdAt, completedAt: job.completedAt });
+  res.json(discoveryJobResponse(job));
 });
 app.post('/api/discovery/jobs/:id/cancel', async (req, res) => {
   objectId(req.params.id, 'Job');
@@ -182,7 +184,7 @@ app.post('/api/discovery/jobs/:id/cancel', async (req, res) => {
   // Cancelled discovery is not an unresolved result set. Clearing its new rows
   // also means cancellation cannot hold the one-job lock after a refresh.
   await Lead.deleteMany({ searchJobId: job._id, status: 'new' });
-  res.json({ jobId: job.id, status: job.status, requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, completedAt: job.completedAt });
+  res.json(discoveryJobResponse(job));
 });
 app.get('/api/leads', async (req, res) => {
   const { page, limit } = parsePagination(req.query);
