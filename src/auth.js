@@ -1,18 +1,14 @@
 import crypto from 'node:crypto';
-import { promisify } from 'node:util';
 
-const scrypt = promisify(crypto.scrypt);
 const SESSION_COOKIE = 'leadscout_session';
 const SESSION_LIFETIME_MS = 12 * 60 * 60 * 1000;
-const passwordHashPattern = /^scrypt\$([^$]+)\$([A-Za-z0-9_-]+)$/;
 
 function credentialsConfig() {
   const username = process.env.ADMIN_USERNAME;
-  const passwordHash = process.env.ADMIN_PASSWORD_HASH;
+  const password = process.env.ADMIN_PASSWORD;
   const sessionSecret = process.env.SESSION_SECRET;
-  const hashMatch = typeof passwordHash === 'string' ? passwordHashPattern.exec(passwordHash) : null;
-  if (!username?.trim() || !hashMatch || !sessionSecret || Buffer.byteLength(sessionSecret) < 32) return null;
-  return { username, salt: hashMatch[1], derivedKey: hashMatch[2], sessionSecret };
+  if (!username?.trim() || !password || !sessionSecret || Buffer.byteLength(sessionSecret) < 32) return null;
+  return { username, password, sessionSecret };
 }
 
 function safeEqual(left, right) {
@@ -51,12 +47,9 @@ function cookieOptions(maxAge = SESSION_LIFETIME_MS) {
 function setNoStore(res) { res.set('Cache-Control', 'no-store'); }
 function configurationError(res) { setNoStore(res); return res.status(500).json({ error: 'Authentication is not configured.', code: 'AUTH_CONFIGURATION_ERROR' }); }
 
-export async function verifyAdminCredentials(username, password) {
-  const config = credentialsConfig();
-  if (!config) return null;
-  if (typeof username !== 'string' || typeof password !== 'string' || !username || !password || username.length > 256 || password.length > 1024) return false;
-  const candidateKey = await scrypt(password, config.salt, 64);
-  return safeEqual(username, config.username) && safeEqual(candidateKey.toString('base64url'), config.derivedKey);
+export function verifyAdminCredentials(username, password) {
+  if (!credentialsConfig()) return null;
+  return username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD;
 }
 
 export function requireAuth(req, res, next) {
