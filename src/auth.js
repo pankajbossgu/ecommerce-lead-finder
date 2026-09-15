@@ -68,7 +68,6 @@ export function requireAuth(req, res, next) {
 }
 
 export function requireDashboardAuth(req, res, next) {
-  if (!credentialsConfig()) return res.status(500).type('text').send('Authentication is not configured.');
   if (!sessionFromRequest(req)) return res.redirect(302, '/login');
   return next();
 }
