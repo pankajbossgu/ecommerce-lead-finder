@@ -32,7 +32,7 @@ const leadSchema = new mongoose.Schema({
   status: { type: String, enum: ['new', 'saved', 'discarded'], default: 'new', index: true },
   searchJobId: { type: mongoose.Schema.Types.ObjectId, ref: 'SearchJob', default: null, index: true },
   category: { type: String, required: true }, location: { type: String, required: true }, notes: { type: String, default: '', maxlength: 2000 }, keywords: { type: String, default: '' }, isEcommerce: { type: Boolean, required: true },
-  websiteSourceUrl: { type: String, default: null }, emailSourceUrl: { type: String, default: null }, phoneSourceUrl: { type: String, default: null }, discoverySource: { type: String, default: 'gemini_google_search' }, discoveredAt: { type: Date, default: Date.now, index: true },
+  websiteSourceUrl: { type: String, default: null }, emailSourceUrl: { type: String, default: null }, phoneSourceUrl: { type: String, default: null }, discoverySource: { type: String, default: 'gemini_google_search' }, discoverySources: { type: [{ type: String, enum: ['website', 'social'] }], default: [] }, socialProfiles: { instagram: { type: String, default: null }, facebook: { type: String, default: null }, linkedin: { type: String, default: null } }, sourceUrls: { type: [String], default: [] }, discoveredAt: { type: Date, default: Date.now, index: true },
   // These are lifecycle timestamps, intentionally independent from discovery time.
   savedAt: { type: Date, default: null, index: true },
   notUsefulAt: { type: Date, default: null, index: true }
@@ -46,7 +46,8 @@ leadSchema.index({ status: 1, discoveredAt: -1, searchJobId: 1 });
 leadSchema.index({ email: 1 });
 
 const jobSchema = new mongoose.Schema({
-  category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number,
+  category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number, mode: { type: String, enum: ['hybrid', 'website', 'social'], default: 'hybrid' },
+  discoveryProgress: { website: { status: { type: String, default: 'waiting' }, candidates: { type: Number, default: 0 }, error: { type: String, default: null } }, social: { status: { type: String, default: 'waiting' }, candidates: { type: Number, default: 0 }, error: { type: String, default: null } }, merging: { type: String, default: 'waiting' }, validation: { type: String, default: 'waiting' } },
   status: { type: String, enum: ['queued', 'running', 'completed', 'failed', 'cancelled'], default: 'queued', index: true }, openLock: { type: String, default: 'discovery' },
   foundCount: { type: Number, default: 0 }, duplicateCount: { type: Number, default: 0 }, rejectedCount: { type: Number, default: 0 },
   attempts: { type: Number, default: 0 },
@@ -57,7 +58,8 @@ const jobSchema = new mongoose.Schema({
   startedAt: { type: Date, default: null }, completedAt: { type: Date, default: null }, errorMessage: { type: String, default: null }
 }, { timestamps: true, versionKey: false });
 jobSchema.index({ createdAt: -1 }); jobSchema.index({ status: 1, workerLeaseExpiresAt: 1 }); jobSchema.index({ openLock: 1 }, { unique: true, partialFilterExpression: { status: { $in: ['queued', 'running'] } }, name: 'one_active_discovery_job' });
-const historySchema = new mongoose.Schema({ category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number, foundCount: Number }, { timestamps: true, versionKey: false }); historySchema.index({ createdAt: -1 });
+const historySchema = new mongoose.Schema({ category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number, mode: { type: String, enum: ['hybrid', 'website', 'social'], default: 'hybrid' },
+  discoveryProgress: { website: { status: { type: String, default: 'waiting' }, candidates: { type: Number, default: 0 }, error: { type: String, default: null } }, social: { status: { type: String, default: 'waiting' }, candidates: { type: Number, default: 0 }, error: { type: String, default: null } }, merging: { type: String, default: 'waiting' }, validation: { type: String, default: 'waiting' } }, foundCount: Number }, { timestamps: true, versionKey: false }); historySchema.index({ createdAt: -1 });
 const templateSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 120 },
   type: { type: String, required: true, enum: ['email', 'whatsapp'], index: true },

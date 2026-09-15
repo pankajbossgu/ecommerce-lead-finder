@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline } from '../src/app.js';
-import { activeJobFilter, buildDiscoveryPrompt, isTerminalJobStatus, normalizeDiscoveredDomains, prepareLead } from '../src/services.js';
+import { activeJobFilter, buildDiscoveryPrompt, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeDomain, normalizeEmail, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 
 test('normalizes domains without losing meaningful subdomains', () => {
@@ -55,7 +55,7 @@ test('discovery checkpoint tracks candidate domains before validation and filter
   assert.ok(track >= 0 && track < validate, 'identifiable domains must persist before lead validation');
   assert.match(services, /discoveredDomains\.has\(candidateDomain\)/);
   assert.match(services, /duplicateCount: 1, 'checkpoint\.candidateIndex': 1/);
-  assert.match(services, /discoverWithGemini\(job, variations\(job\).*checkpoint\.discoveredDomains\)/);
+  assert.match(services, /runDiscoveryChannels\(\{ \.\.\.job, variationIndex, discoveredDomains: checkpoint\.discoveredDomains \}\)/);
 });
 
 test('lead qualification requires a genuine e-commerce business and a non-social official website', () => {
@@ -80,13 +80,38 @@ test('official social-profile email is a verified fallback, not an unrelated or 
   assert.equal(prepareLead({ ...ecommerceCandidate, email: null }, discoveryInput), null);
 });
 test('validates discovery counts, pagination, and lead status lifecycle', () => {
-  assert.deepEqual(parseDiscoveryInput({ category: 'Fashion', location: 'India', keywords: '', requestedCount: '50' }), { category: 'Fashion', location: 'India', keywords: '', requestedCount: 50 });
+  assert.deepEqual(parseDiscoveryInput({ category: 'Fashion', location: 'India', keywords: '', requestedCount: '50' }), { category: 'Fashion', location: 'India', keywords: '', requestedCount: 50, mode: 'hybrid' });
   assert.throws(() => parseDiscoveryInput({ category: 'Fashion', location: 'India', requestedCount: '25' }));
   assert.deepEqual(parsePagination({ page: '2', limit: '50' }), { page: 2, limit: 50 });
   assert.throws(() => parsePagination({ limit: '101' }));
   assert.equal(assertLeadStatus('saved'), 'saved'); assert.throws(() => assertLeadStatus('campaign'));
 });
 
+
+test('discovery modes run independent channels and hybrid merges cross-channel identities', async () => {
+  const calls = [];
+  const strategies = {
+    website: async () => { calls.push('website'); return [{ ...ecommerceCandidate }]; },
+    social: async () => { calls.push('social'); return [{ ...ecommerceCandidate, socialProfiles: { instagram: 'https://instagram.com/glowgoods' } }]; }
+  };
+  const base = { ...discoveryInput };
+  await runDiscoveryChannels({ ...base, mode: 'website' }, strategies);
+  assert.deepEqual(calls, ['website']); calls.length = 0;
+  await runDiscoveryChannels({ ...base, mode: 'social' }, strategies);
+  assert.deepEqual(calls, ['social']); calls.length = 0;
+  const hybrid = await runDiscoveryChannels({ ...base, mode: 'hybrid' }, strategies);
+  assert.deepEqual(calls.sort(), ['social', 'website']); assert.equal(hybrid.candidates.length, 1);
+  assert.deepEqual(hybrid.candidates[0].discoverySources.sort(), ['social', 'website']);
+});
+test('candidate merging keeps one canonical lead for an official-domain social match', () => {
+  const merged = mergeCandidates([{ ...ecommerceCandidate, discoverySources: ['website'], sourceUrls: ['https://glowgoods.example.org'] }, { ...ecommerceCandidate, discoverySources: ['social'], socialProfiles: { instagram: 'https://instagram.com/glowgoods' }, sourceUrls: ['https://instagram.com/glowgoods'] }]);
+  assert.equal(merged.length, 1); assert.deepEqual(merged[0].discoverySources.sort(), ['social', 'website']);
+});
+test('discovery input defaults safely to hybrid and rejects unknown modes', () => {
+  assert.equal(parseDiscoveryInput({ category: 'Fashion', location: 'India', requestedCount: '20' }).mode, 'hybrid');
+  assert.equal(parseDiscoveryInput({ category: 'Fashion', location: 'India', requestedCount: '20', mode: 'social' }).mode, 'social');
+  assert.throws(() => parseDiscoveryInput({ category: 'Fashion', location: 'India', requestedCount: '20', mode: 'untrusted' }));
+});
 test('job lifecycle regression: cancelled is terminal and finalisation is ownership guarded', () => {
   assert.equal(isTerminalJobStatus('queued'), false);
   assert.equal(isTerminalJobStatus('running'), false);
