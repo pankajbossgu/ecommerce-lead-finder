@@ -329,7 +329,12 @@ app.delete('/api/campaigns/:id', async (req, res) => {
   res.json({ deletedId: String(campaign._id) });
 });
 function selectedLeadPipeline(body) {
-  if (body?.selectAllMatching === true) return managementPipeline({ status: 'saved', search: body.search, from: body.from, to: body.to, tab: body.tab, channel: body.channel, communicationStatus: body.communicationStatus, campaign: body.campaign });
+  if (body?.selectAllMatching === true) {
+    const excludedIds = [...new Set(Array.isArray(body.excludedLeadIds) ? body.excludedLeadIds : [])];
+    if (!excludedIds.every(mongoose.isValidObjectId)) throw new AppError('Excluded saved leads must have valid IDs', 400, 'VALIDATION_ERROR');
+    const pipeline = managementPipeline({ status: 'saved', search: body.search, from: body.from, to: body.to, tab: body.tab, channel: body.channel, communicationStatus: body.communicationStatus, campaign: body.campaign });
+    return excludedIds.length ? [...pipeline, { $match: { _id: { $nin: excludedIds.map(id => new mongoose.Types.ObjectId(id)) } } }] : pipeline;
+  }
   const ids = Array.isArray(body?.leadIds) ? [...new Set(body.leadIds)] : [];
   if (!ids.length || ids.length > 100 || !ids.every(mongoose.isValidObjectId)) throw new AppError('Choose one to 100 valid saved leads', 400, 'VALIDATION_ERROR');
   return [{ $match: { _id: { $in: ids.map(id => new mongoose.Types.ObjectId(id)) }, status: 'saved' } }];
