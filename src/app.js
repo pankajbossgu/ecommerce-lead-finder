@@ -13,6 +13,7 @@ import { runDiscovery } from './services.js';
 import { AppError, applyDateRange, assertLeadStatus, isSafePublicUrl, isValidPublicEmail, logger, normalizeDomain, normalizeEmail, normalizePhone, normalizeUrl, parseDateRange, parseDiscoveryInput, parsePagination } from './utils.js';
 
 const app = express();
+app.set('trust proxy', 1);
 const publicDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), '../public');
 const allowedOrigins = env.appOrigin.split(',').map((origin) => origin.trim()).filter(Boolean);
 const sendRateLimit = rateLimit({ windowMs: 60_000, limit: 12, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many send requests. Please wait before trying again.' } });
