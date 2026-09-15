@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import mongoose from 'mongoose';
 import crypto from 'node:crypto';
+import { authRoutes, isAuthenticated, requireAuth, requireDashboardAuth } from './auth.js';
 import { connectDatabase, env, Lead, SearchHistory, SearchJob, OutreachTemplate, Campaign, CampaignRecipient, OutreachActivity } from './models.js';
 import { sendEmailBatch } from './services/email.js';
 import { runDiscovery } from './services.js';
@@ -16,6 +17,7 @@ const publicDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), 
 const allowedOrigins = env.appOrigin.split(',').map((origin) => origin.trim()).filter(Boolean);
 const sendRateLimit = rateLimit({ windowMs: 60_000, limit: 12, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many send requests. Please wait before trying again.' } });
 const discoveryRateLimit = rateLimit({ windowMs: env.rateLimitWindowMs, limit: env.rateLimitMax, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many discovery requests. Please try again later.' } });
+const loginRateLimit = rateLimit({ windowMs: 15 * 60_000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many login attempts. Please try again later.', code: 'LOGIN_RATE_LIMITED' } });
 
 function requestOrigin(req) {
   const protocol = req.get('x-forwarded-proto')?.split(',')[0].trim() || req.protocol;
@@ -126,7 +128,16 @@ const csvCell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
 function csvRow(lead, srNo) { return [srNo, lead.businessName, lead.website, lead.phone, lead.email, lead.address || '', lead.location || '', '', '', lead.status, lead.discoveredAt?.toISOString() || '', lead.savedAt?.toISOString() || '', lead.notUsefulAt?.toISOString() || ''].map(csvCell).join(','); }
 
 app.disable('x-powered-by');
-app.use(async (_req, _res, next) => {
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+app.use((req, res, next) => cors(corsOptionsForRequest(req))(req, res, next));
+app.use(express.json({ limit: '20kb', type: 'application/json' }));
+authRoutes(app, loginRateLimit);
+app.get('/api/health', (_req, res) => {
+  const connected = mongoose.connection.readyState === 1;
+  res.status(connected ? 200 : 503).json({ status: connected ? 'ok' : 'degraded', database: connected ? 'connected' : 'disconnected' });
+});
+app.use('/api', requireAuth);
+app.use('/api', async (_req, _res, next) => {
   try {
     await connectDatabase();
     next();
@@ -134,9 +145,6 @@ app.use(async (_req, _res, next) => {
     next(error);
   }
 });
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
-app.use((req, res, next) => cors(corsOptionsForRequest(req))(req, res, next));
-app.use(express.json({ limit: '20kb', type: 'application/json' }));
 
 app.post('/api/discovery/jobs', discoveryRateLimit, async (req, res) => {
   const unresolved = await Lead.exists({ status: 'new' });
@@ -351,12 +359,16 @@ app.post('/api/campaigns/:id/recipients/:recipientId/skip', async (req, res) => 
 app.get('/api/campaigns/:id/recipients/:recipientId/whatsapp-message', async (req, res) => { const recipient = await recipientFor(req.params.id, req.params.recipientId); if (recipient.channel !== 'whatsapp') throw new AppError('Only WhatsApp recipients have a WhatsApp message', 409, 'VALIDATION_ERROR'); const [lead, template] = await Promise.all([Lead.findById(recipient.leadId).lean(), OutreachTemplate.findOne({ _id: recipient.templateId, type: 'whatsapp' }).lean()]); if (!lead || !template) throw new AppError('WhatsApp message is unavailable', 409, 'MESSAGE_UNAVAILABLE'); res.json({ message: renderTemplate(template.body, lead) }); });
 app.get('/api/leads/:id/outreach', async (req, res) => { objectId(req.params.id, 'Lead'); const items = await OutreachActivity.find({ leadId: req.params.id }).populate('campaignId', 'name').populate('templateId', 'name').sort({ sentAt: -1, createdAt: -1 }).lean(); res.json({ items: items.map(item => ({ ...item, campaignId: item.campaignId || { _id: item.campaignId, name: 'Deleted campaign' } })) }); });
 app.get('/api/campaigns/:id/activity', async (req, res) => { await requireCampaign(req.params.id); res.json({ items: await OutreachActivity.find({ campaignId: req.params.id }).sort({ createdAt: -1 }).lean() }); });
-app.get('/api/health', (_req, res) => {
-  const connected = mongoose.connection.readyState === 1;
-  res.status(connected ? 200 : 503).json({ status: connected ? 'ok' : 'degraded', database: connected ? 'connected' : 'disconnected' });
+app.get(['/login', '/login.html'], (req, res) => {
+  if (isAuthenticated(req)) return res.redirect(302, '/');
+  res.set('Cache-Control', 'no-store');
+  return res.sendFile(path.join(publicDirectory, 'login.html'));
 });
-
-app.use(express.static(publicDirectory, { index: 'index.html', maxAge: env.nodeEnv === 'production' ? '1h' : 0 }));
+app.get(['/', '/index.html'], requireDashboardAuth, (_req, res) => {
+  res.set('Cache-Control', 'no-store, private');
+  return res.sendFile(path.join(publicDirectory, 'index.html'));
+});
+app.use(express.static(publicDirectory, { index: false, maxAge: env.nodeEnv === 'production' ? '1h' : 0 }));
 app.use((_req, _res, next) => next(Object.assign(new Error('Route not found'), { status: 404 })));
 app.use((error, _req, res, _next) => {
   if (error?.code === 11000) return res.status(409).json({ error: 'This business is already saved or marked not useful.', code: 'DUPLICATE_RESOLVED_LEAD' });
