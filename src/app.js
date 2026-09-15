@@ -7,8 +7,9 @@ import rateLimit from 'express-rate-limit';
 import mongoose from 'mongoose';
 import crypto from 'node:crypto';
 import { authRoutes, isAuthenticated, requireAuth, requireDashboardAuth } from './auth.js';
-import { connectDatabase, env, Lead, SearchHistory, SearchJob, OutreachTemplate, Campaign, CampaignRecipient, OutreachActivity } from './models.js';
+import { connectDatabase, env, Lead, SearchHistory, SearchJob, OutreachTemplate, Campaign, CampaignRecipient, OutreachActivity, ReceivedEmail, SentMailboxEmail } from './models.js';
 import { sendEmailBatch } from './services/email.js';
+import { listReceived, mailboxInput, persistReceived, receiveEmail, sendMailboxEmail, verifyResendWebhook } from './services/inbox.js';
 import { findLeadDuplicateReason, runDiscovery } from './services.js';
 import { AppError, applyDateRange, assertLeadStatus, isSafePublicUrl, isValidPublicEmail, logger, normalizeDomain, normalizeEmail, normalizePhone, normalizeUrl, parseDateRange, parseDiscoveryInput, parsePagination } from './utils.js';
 
@@ -19,6 +20,7 @@ const allowedOrigins = env.appOrigin.split(',').map((origin) => origin.trim()).f
 const sendRateLimit = rateLimit({ windowMs: 60_000, limit: 12, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many send requests. Please wait before trying again.' } });
 const discoveryRateLimit = rateLimit({ windowMs: env.rateLimitWindowMs, limit: env.rateLimitMax, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many discovery requests. Please try again later.' } });
 const loginRateLimit = rateLimit({ windowMs: 15 * 60_000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many login attempts. Please try again later.', code: 'LOGIN_RATE_LIMITED' } });
+const mailboxRateLimit = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Too many mailbox requests. Please wait before trying again.' } });
 
 function requestOrigin(req) {
   const protocol = req.get('x-forwarded-proto')?.split(',')[0].trim() || req.protocol;
@@ -130,6 +132,19 @@ function csvRow(lead, srNo) { return [srNo, lead.businessName, lead.website, lea
 app.disable('x-powered-by');
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use((req, res, next) => cors(corsOptionsForRequest(req))(req, res, next));
+// Resend signs exact raw bytes. This must remain before the global JSON parser.
+app.post('/api/webhooks/resend', express.raw({ type: 'application/json', limit: '256kb' }), async (req, res, next) => {
+  try {
+    if (!verifyResendWebhook(req.headers, req.body)) throw new AppError('Invalid webhook signature.', 401, 'WEBHOOK_SIGNATURE_INVALID');
+    const event = JSON.parse(req.body.toString('utf8'));
+    if (event.type !== 'email.received') return res.status(204).end();
+    await connectDatabase();
+    const emailId = event.data?.email_id || event.data?.id;
+    if (!emailId) throw new AppError('Webhook is missing an email id.', 400, 'WEBHOOK_INVALID');
+    if (!await ReceivedEmail.exists({ resendEmailId: String(emailId) })) await persistReceived(await receiveEmail(emailId), { eventId: event.id });
+    return res.status(200).json({ received: true });
+  } catch (error) { return next(error); }
+});
 app.use(express.json({ limit: '20kb', type: 'application/json' }));
 authRoutes(app, loginRateLimit);
 app.get('/api/health', (_req, res) => {
@@ -145,6 +160,26 @@ app.use('/api', async (_req, _res, next) => {
     next(error);
   }
 });
+
+const mailboxPage = query => { const page = Math.max(1, Number(query.page) || 1); const limit = Math.min(50, Math.max(1, Number(query.limit) || 20)); return { page, limit }; };
+const mailboxSearch = query => { const term = String(query.search || '').trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); return term ? { $or: ['from', 'to', 'cc', 'bcc', 'subject', 'text'].map(field => ({ [field]: { $regex: term, $options: 'i' } })) } : {}; };
+async function mailboxList(Model, req, res, kind) {
+  const { page, limit } = mailboxPage(req.query); const deleted = req.query.deleted === 'true'; const filter = { deletedAt: deleted ? { $ne: null } : null, ...mailboxSearch(req.query) };
+  if (kind === 'inbox' && req.query.unread === 'true') filter.readAt = null; if (kind === 'inbox' && req.query.unread === 'false') filter.readAt = { $ne: null };
+  const sort = kind === 'sent' ? { sentAt: -1, _id: -1 } : { receivedAt: -1, _id: -1 };
+  const [items, total, unreadCount] = await Promise.all([Model.find(filter).select('-html -headers -attachments').sort(sort).skip((page - 1) * limit).limit(limit).lean(), Model.countDocuments(filter), kind === 'inbox' ? ReceivedEmail.countDocuments({ deletedAt: null, readAt: null }) : 0]);
+  res.json({ items: items.map(item => ({ ...item, snippet: String(item.text || '').replace(/\s+/g, ' ').slice(0, 180) })), total, unreadCount, pagination: pagination(page, limit, total) });
+}
+app.get('/api/mailbox/inbox', (req, res) => mailboxList(ReceivedEmail, req, res, 'inbox'));
+app.get('/api/mailbox/sent', (req, res) => mailboxList(SentMailboxEmail, req, res, 'sent'));
+app.get('/api/mailbox/trash', async (req, res) => { const { page, limit } = mailboxPage(req.query); const [inbox, sent] = await Promise.all([ReceivedEmail.find({ deletedAt: { $ne: null }, ...mailboxSearch(req.query) }).select('-html -headers').lean(), SentMailboxEmail.find({ deletedAt: { $ne: null }, ...mailboxSearch(req.query) }).select('-html -headers').lean()]); const items = [...inbox.map(x => ({ ...x, box: 'inbox', date: x.receivedAt })), ...sent.map(x => ({ ...x, box: 'sent', date: x.sentAt }))].sort((a, b) => b.date - a.date); res.json({ items: items.slice((page - 1) * limit, page * limit), total: items.length, pagination: pagination(page, limit, items.length) }); });
+app.get('/api/mailbox/conversations/:id', async (req, res) => { const [received, sent] = await Promise.all([ReceivedEmail.find({ conversationId: req.params.id, deletedAt: null }).lean(), SentMailboxEmail.find({ conversationId: req.params.id, deletedAt: null }).lean()]); if (!received.length && !sent.length) throw new AppError('Conversation not found', 404, 'NOT_FOUND'); await ReceivedEmail.updateMany({ conversationId: req.params.id, deletedAt: null, readAt: null }, { $set: { readAt: new Date() } }); res.json({ items: [...received.map(x => ({ ...x, box: 'inbox', date: x.receivedAt })), ...sent.map(x => ({ ...x, box: 'sent', date: x.sentAt }))].sort((a, b) => a.date - b.date) }); });
+app.post('/api/mailbox/sync', mailboxRateLimit, async (_req, res) => { let imported = 0; let existing = 0; let failed = 0; const rows = await listReceived(30); for (const row of (rows.data || rows).slice(0, 30)) { try { const outcome = await persistReceived(await receiveEmail(row.id)); outcome.created ? imported++ : existing++; } catch { failed++; } } res.json({ imported, alreadyExisting: existing, failed }); });
+app.post('/api/mailbox/send', mailboxRateLimit, async (req, res) => res.status(201).json(await sendMailboxEmail(mailboxInput(req.body))));
+app.post('/api/mailbox/conversations/:id/reply', mailboxRateLimit, async (req, res) => { const latest = await Promise.all([ReceivedEmail.findOne({ conversationId: req.params.id }).sort({ receivedAt: -1 }).lean(), SentMailboxEmail.findOne({ conversationId: req.params.id }).sort({ sentAt: -1 }).lean()]); const original = latest.filter(Boolean).sort((a, b) => new Date(b.receivedAt || b.sentAt) - new Date(a.receivedAt || a.sentAt))[0]; if (!original) throw new AppError('Conversation not found', 404, 'NOT_FOUND'); const input = mailboxInput({ ...req.body, to: req.body?.to || [original.from] }); input.subject = /^re:/i.test(input.subject) ? input.subject : `Re: ${original.subject}`; res.status(201).json(await sendMailboxEmail(input, { conversationId: req.params.id, inReplyTo: original.messageId, references: [...(original.references || []), original.messageId].filter(Boolean) })); });
+app.patch('/api/mailbox/conversations/:id/read', async (req, res) => { const readAt = req.body?.unread ? null : new Date(); await ReceivedEmail.updateMany({ conversationId: req.params.id, deletedAt: null }, { $set: { readAt } }); res.json({ ok: true }); });
+app.patch('/api/mailbox/conversations/:id/delete', async (req, res) => { const update = { $set: { deletedAt: req.body?.restore ? null : new Date() } }; await Promise.all([ReceivedEmail.updateMany({ conversationId: req.params.id }, update), SentMailboxEmail.updateMany({ conversationId: req.params.id }, update)]); res.json({ ok: true }); });
+app.delete('/api/mailbox/conversations/:id', mailboxRateLimit, async (req, res) => { if (req.body?.confirmation !== 'DELETE') throw new AppError('Type DELETE to permanently remove this conversation.', 400, 'CONFIRMATION_REQUIRED'); await Promise.all([ReceivedEmail.deleteMany({ conversationId: req.params.id, deletedAt: { $ne: null } }), SentMailboxEmail.deleteMany({ conversationId: req.params.id, deletedAt: { $ne: null } })]); res.json({ ok: true }); });
 
 const discoveryJobResponse = job => ({ jobId: String(job._id || job.id), status: job.status, mode: job.mode || 'hybrid', requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, error: job.errorMessage, checkpoint: job.checkpoint, discoveryProgress: job.discoveryProgress, createdAt: job.createdAt, completedAt: job.completedAt });
 

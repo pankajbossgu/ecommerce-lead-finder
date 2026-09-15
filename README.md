@@ -117,3 +117,18 @@ Email campaigns require both server-only variables below. `EMAIL_FROM` must use 
 For local development, put them in the ignored `.env` file. For Vercel, add both under **Project → Settings → Environment Variables** for every deployed environment (Preview and Production as appropriate), then redeploy. Never put real keys in `.env.example`, browser code, logs, or support screenshots.
 
 If a batch fails, open the campaign detail: each affected recipient shows a safe failure reason and the campaign remains visibly failed or partially delivered rather than silently completing. Check that the sender domain is verified, the recipient address is valid, and the Resend account/quota permits the request. Transient provider/rate-limit failures can be retried from the campaign detail; the persisted recipient idempotency key prevents a retry from intentionally duplicating an already accepted recipient.
+
+## Mailbox and Resend Receiving
+
+Mailbox is an independent direct-email system. It stores incoming messages in `ReceivedEmail` and direct sends in `SentMailboxEmail`; it does not require or alter leads, campaigns, recipients, or outreach history.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `RESEND_API_KEY` | Yes | Server-only key used for direct Mailbox sending and receiving retrieval. |
+| `RESEND_WEBHOOK_SECRET` | Yes for inbound webhooks | Server-only signing secret from the Resend webhook configuration. |
+| `EMAIL_FROM` | Yes for sending | A verified Resend sender, such as `LeadScout <mail@your-domain.com>`. |
+| `EMAIL_REPLY_TO` | No | Reply-To address used only for direct Mailbox sends. |
+
+In Resend, configure a receiving-enabled domain and its DNS records according to Resend's current receiving-domain instructions. Then create a webhook for `email.received` pointing to `https://your-deployment/api/webhooks/resend`, copy its signing secret into `RESEND_WEBHOOK_SECRET`, and redeploy. The endpoint intentionally accepts no browser authentication: it verifies the raw Svix signature (`svix-id`, `svix-timestamp`, and `svix-signature`) before retrieving content through Resend Receiving. Do not expose any of these values in browser code.
+
+The Mailbox **Sync** button imports up to 30 recent received emails, so mail delivered before webhook setup can be safely backfilled. Incoming HTML is stored but the UI renders plain text only; attachment records retain metadata only.

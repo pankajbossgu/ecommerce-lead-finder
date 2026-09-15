@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline } from '../src/app.js';
 import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, duplicateReasonForLead, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizeSocialProfileUrl, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
+import crypto from 'node:crypto';
+import { conversationFor, verifyResendWebhook } from '../src/services/inbox.js';
+
+test('mailbox webhook verification rejects missing and invalid signatures and accepts a fresh signed body', () => {
+  const raw = Buffer.from('{"type":"email.received"}'); const secret = `whsec_${Buffer.from('mailbox-test-secret').toString('base64')}`; const timestamp = String(Math.floor(Date.now() / 1000)); const id = 'msg_test';
+  const signature = crypto.createHmac('sha256', Buffer.from('mailbox-test-secret')).update(`${id}.${timestamp}.${raw}`).digest('base64');
+  assert.equal(verifyResendWebhook({}, raw, secret), false);
+  assert.equal(verifyResendWebhook({ 'svix-id': id, 'svix-timestamp': timestamp, 'svix-signature': 'v1,bad' }, raw, secret), false);
+  assert.equal(verifyResendWebhook({ 'svix-id': id, 'svix-timestamp': timestamp, 'svix-signature': `v1,${signature}` }, raw, secret), true);
+});
+
+test('mailbox threading uses reliable reply identifiers and avoids subject-only merges', () => {
+  const conversationId = 'conversation-1';
+  assert.equal(conversationFor({ subject: 'Re: Proposal', inReplyTo: '<origin>', references: ['<origin>'] }, [{ conversationId, messageId: '<origin>', subject: 'Proposal' }]), conversationId);
+  assert.notEqual(conversationFor({ from: 'a@example.test', fromEmail: 'a@example.test', to: ['b@example.test'], subject: 'Proposal', receivedAt: new Date() }, [{ conversationId, from: 'other@example.test', fromEmail: 'other@example.test', to: ['b@example.test'], subject: 'Proposal', date: new Date(), fallbackSignature: 'other@example.test|b@example.test|proposal' }]), conversationId);
+});
 
 test('normalizes domains without losing meaningful subdomains', () => {
   assert.equal(normalizeDomain('HTTPS://WWW.Example.COM/Test?utm_source=x'), 'example.com');
