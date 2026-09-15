@@ -35,7 +35,6 @@ async function resendRequest(path, config = env) {
   if (!response.ok) throw new AppError('Email provider is unavailable.', 502, 'EMAIL_PROVIDER_REJECTED'); return json.data || json;
 }
 export const receiveEmail = (id, config) => resendRequest(`/emails/receiving/${encodeURIComponent(id)}`, config);
-export const listReceived = (limit, config) => resendRequest(`/emails/receiving?limit=${limit}`, config);
 export function createRfcMessageId(from = env.emailFrom) { const domain = address(from).split('@')[1]?.toLowerCase().replace(/[^a-z0-9.-]/g, '') || 'mail.local'; return `<${crypto.randomUUID()}@${domain}>`; }
 async function threadCandidates(ids) {
   if (!ids.length) return [];
