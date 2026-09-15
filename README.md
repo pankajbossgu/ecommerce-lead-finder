@@ -120,7 +120,7 @@ If a batch fails, open the campaign detail: each affected recipient shows a safe
 
 ## Mailbox and Resend Receiving
 
-Mailbox is an independent direct-email system. It stores incoming messages in `ReceivedEmail` and direct sends in `SentMailboxEmail`; it does not require or alter leads, campaigns, recipients, or outreach history.
+Mailbox is independent from campaign history: it stores incoming messages in `ReceivedEmail` and every direct **and successful campaign** send in `SentMailboxEmail`. Campaign recipient and `OutreachActivity` history remain intact, including if a campaign or a mailbox conversation is deleted.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
@@ -131,4 +131,4 @@ Mailbox is an independent direct-email system. It stores incoming messages in `R
 
 In Resend, configure a receiving-enabled domain and its DNS records according to Resend's current receiving-domain instructions. Then create a webhook for `email.received` pointing to `https://your-deployment/api/webhooks/resend`, copy its signing secret into `RESEND_WEBHOOK_SECRET`, and redeploy. The endpoint intentionally accepts no browser authentication: it verifies the raw Svix signature (`svix-id`, `svix-timestamp`, and `svix-signature`) before retrieving content through Resend Receiving. Do not expose any of these values in browser code.
 
-The Mailbox **Sync** button imports up to 30 recent received emails, so mail delivered before webhook setup can be safely backfilled. Incoming HTML is stored but the UI renders plain text only; attachment records retain metadata only.
+The Mailbox **Sync** button imports up to 30 recent received emails, so mail delivered before webhook setup can be safely backfilled without duplicates. The webhook uses its `svix-id` for delivery idempotency and `email_id` for received-email idempotency. Incoming HTML is stored but the UI renders plain text only; attachment records retain metadata only.
