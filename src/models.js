@@ -4,7 +4,7 @@ import { isValidPublicEmail, normalizeEmail } from './utils.js';
 
 const number = (name, fallback) => { const value = Number(process.env[name] ?? fallback); return Number.isFinite(value) ? value : fallback; };
 const databaseName = 'ecommerce_lead_finder';
-export const env = Object.freeze({ nodeEnv: process.env.NODE_ENV || 'development', port: number('PORT', 3000), mongoUri: process.env.MONGODB_URI || '', geminiApiKey: process.env.GEMINI_API_KEY || '', resendApiKey: process.env.RESEND_API_KEY || '', emailFrom: process.env.EMAIL_FROM || '', appOrigin: process.env.APP_ORIGIN || '', rateLimitWindowMs: number('DISCOVERY_RATE_LIMIT_WINDOW_MS', 900000), rateLimitMax: number('DISCOVERY_RATE_LIMIT_MAX', 10), discoveryMaxAttempts: Math.min(number('DISCOVERY_MAX_ATTEMPTS', 4), 8), discoveryBatchSize: Math.min(number('DISCOVERY_BATCH_SIZE', 30), 50) });
+export const env = Object.freeze({ nodeEnv: process.env.NODE_ENV || 'development', port: number('PORT', 3000), mongoUri: process.env.MONGODB_URI || '', geminiApiKey: process.env.GEMINI_API_KEY || '', resendApiKey: process.env.RESEND_API_KEY || '', resendWebhookSecret: process.env.RESEND_WEBHOOK_SECRET || '', emailFrom: process.env.EMAIL_FROM || '', emailReplyTo: process.env.EMAIL_REPLY_TO || '', appOrigin: process.env.APP_ORIGIN || '', rateLimitWindowMs: number('DISCOVERY_RATE_LIMIT_WINDOW_MS', 900000), rateLimitMax: number('DISCOVERY_RATE_LIMIT_MAX', 10), discoveryMaxAttempts: Math.min(number('DISCOVERY_MAX_ATTEMPTS', 4), 8), discoveryBatchSize: Math.min(number('DISCOVERY_BATCH_SIZE', 30), 50) });
 let connectPromise; let indexesMigrated = false;
 async function migrateLegacyDomainIndex() {
   if (indexesMigrated) return;
@@ -52,7 +52,7 @@ async function migrateLegacyDomainIndex() {
     if (activityOps.length === 500) { await activities.bulkWrite(activityOps); activityOps.length = 0; }
   }
   if (activityOps.length) await activities.bulkWrite(activityOps);
-  await Lead.createIndexes();
+  await Promise.all([Lead.createIndexes(), ReceivedEmail.createIndexes(), SentMailboxEmail.createIndexes()]);
   indexesMigrated = true;
 }
 export async function connectDatabase() {
@@ -135,4 +135,12 @@ const activitySchema = new mongoose.Schema({
 }, { timestamps: true, versionKey: false });
 activitySchema.pre('validate', function normalizeActivityRecipient(next) { this.recipientNormalized = this.channel === 'email' ? normalizeEmail(this.recipient) : null; next(); });
 activitySchema.index({ leadId: 1, sentAt: -1, createdAt: -1 }); activitySchema.index({ campaignId: 1, createdAt: -1 }); activitySchema.index({ channel: 1, status: 1, sentAt: -1 }); activitySchema.index({ channel: 1, recipientNormalized: 1, status: 1 });
-export const Lead = mongoose.model('Lead', leadSchema); export const SearchJob = mongoose.model('SearchJob', jobSchema); export const SearchHistory = mongoose.model('SearchHistory', historySchema); export const OutreachTemplate = mongoose.model('OutreachTemplate', templateSchema); export const Campaign = mongoose.model('Campaign', campaignSchema); export const CampaignRecipient = mongoose.model('CampaignRecipient', recipientSchema); export const OutreachActivity = mongoose.model('OutreachActivity', activitySchema);
+const mailboxFields = {
+  from: { type: String, required: true, maxlength: 500 }, to: { type: [String], default: [] }, cc: { type: [String], default: [] }, bcc: { type: [String], default: [] }, replyTo: { type: [String], default: [] },
+  subject: { type: String, default: '', maxlength: 500 }, text: { type: String, default: '', maxlength: 200000 }, html: { type: String, default: '', maxlength: 500000 }, headers: { type: mongoose.Schema.Types.Mixed, default: {} }, messageId: { type: String, default: null, index: true }, inReplyTo: { type: String, default: null, index: true }, references: { type: [String], default: [] }, conversationId: { type: String, required: true, index: true }, attachments: { type: [mongoose.Schema.Types.Mixed], default: [] }, deletedAt: { type: Date, default: null, index: true }
+};
+const receivedEmailSchema = new mongoose.Schema({ ...mailboxFields, resendEmailId: { type: String, required: true, unique: true, index: true, maxlength: 200 }, webhookEventId: { type: String, default: null, index: true, maxlength: 200 }, fromEmail: { type: String, required: true, index: true, maxlength: 254 }, leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead', default: null }, receivedAt: { type: Date, required: true, default: Date.now, index: true }, readAt: { type: Date, default: null, index: true } }, { timestamps: true, versionKey: false });
+receivedEmailSchema.index({ deletedAt: 1, receivedAt: -1 }); receivedEmailSchema.index({ conversationId: 1, receivedAt: -1 });
+const sentMailboxEmailSchema = new mongoose.Schema({ ...mailboxFields, resendEmailId: { type: String, default: null, index: true, maxlength: 200 }, providerMessageId: { type: String, default: null, index: true, maxlength: 200 }, sentAt: { type: Date, required: true, default: Date.now, index: true }, status: { type: String, enum: ['sent', 'failed'], default: 'sent' } }, { timestamps: true, versionKey: false });
+sentMailboxEmailSchema.index({ deletedAt: 1, sentAt: -1 }); sentMailboxEmailSchema.index({ conversationId: 1, sentAt: -1 });
+export const Lead = mongoose.model('Lead', leadSchema); export const SearchJob = mongoose.model('SearchJob', jobSchema); export const SearchHistory = mongoose.model('SearchHistory', historySchema); export const OutreachTemplate = mongoose.model('OutreachTemplate', templateSchema); export const Campaign = mongoose.model('Campaign', campaignSchema); export const CampaignRecipient = mongoose.model('CampaignRecipient', recipientSchema); export const OutreachActivity = mongoose.model('OutreachActivity', activitySchema); export const ReceivedEmail = mongoose.model('ReceivedEmail', receivedEmailSchema); export const SentMailboxEmail = mongoose.model('SentMailboxEmail', sentMailboxEmailSchema);
