@@ -91,7 +91,7 @@ function leadFilter(query, { allowJob = true } = {}) {
   if (query.search?.trim()) { const term = query.search.trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); filter.$or = [{ businessName: { $regex: term, $options: 'i' } }, { domain: { $regex: term, $options: 'i' } }, { email: { $regex: term, $options: 'i' } }]; }
   return filter;
 }
-function manualLeadInput(body) {
+export function manualLeadInput(body) {
   const businessName = cleanText(body?.businessName, 'Business name', 200);
   const website = normalizeUrl(body?.website); const domain = normalizeDomain(website);
   if (!website || !domain || !isSafePublicUrl(website)) throw new AppError('Website must be a valid public URL', 400, 'VALIDATION_ERROR');
