@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { authRoutes, isAuthenticated, requireAuth, requireDashboardAuth } from './auth.js';
 import { connectDatabase, env, Lead, SearchHistory, SearchJob, OutreachTemplate, Campaign, CampaignRecipient, OutreachActivity, ReceivedEmail, SentMailboxEmail } from './models.js';
 import { sendEmailBatch } from './services/email.js';
-import { listReceived, mailboxInput, persistReceived, receiveEmail, sendMailboxEmail, verifyResendWebhook } from './services/inbox.js';
+import { createRfcMessageId, listReceived, mailboxInput, messageIds, normalizedMessageId, persistCampaignMailboxEmail, persistReceived, receiveEmail, sendMailboxEmail, verifyResendWebhook } from './services/inbox.js';
 import { findLeadDuplicateReason, runDiscovery } from './services.js';
 import { AppError, applyDateRange, assertLeadStatus, isSafePublicUrl, isValidPublicEmail, logger, normalizeDomain, normalizeEmail, normalizePhone, normalizeUrl, parseDateRange, parseDiscoveryInput, parsePagination } from './utils.js';
 
@@ -136,12 +136,13 @@ app.use((req, res, next) => cors(corsOptionsForRequest(req))(req, res, next));
 app.post('/api/webhooks/resend', express.raw({ type: 'application/json', limit: '256kb' }), async (req, res, next) => {
   try {
     if (!verifyResendWebhook(req.headers, req.body)) throw new AppError('Invalid webhook signature.', 401, 'WEBHOOK_SIGNATURE_INVALID');
-    const event = JSON.parse(req.body.toString('utf8'));
+    let event; try { event = JSON.parse(req.body.toString('utf8')); } catch { throw new AppError('Webhook payload is malformed.', 400, 'WEBHOOK_INVALID'); }
+    if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.type !== 'string') throw new AppError('Webhook payload is malformed.', 400, 'WEBHOOK_INVALID');
     if (event.type !== 'email.received') return res.status(204).end();
-    await connectDatabase();
-    const emailId = event.data?.email_id || event.data?.id;
+    const emailId = event.data?.email_id;
     if (!emailId) throw new AppError('Webhook is missing an email id.', 400, 'WEBHOOK_INVALID');
-    if (!await ReceivedEmail.exists({ resendEmailId: String(emailId) })) await persistReceived(await receiveEmail(emailId), { eventId: event.id });
+    await connectDatabase();
+    if (!await ReceivedEmail.exists({ resendEmailId: String(emailId) })) await persistReceived(await receiveEmail(emailId), { eventId: req.headers['svix-id'], messageId: event.data?.message_id });
     return res.status(200).json({ received: true });
   } catch (error) { return next(error); }
 });
@@ -176,7 +177,7 @@ app.get('/api/mailbox/trash', async (req, res) => { const { page, limit } = mail
 app.get('/api/mailbox/conversations/:id', async (req, res) => { const [received, sent] = await Promise.all([ReceivedEmail.find({ conversationId: req.params.id, deletedAt: null }).lean(), SentMailboxEmail.find({ conversationId: req.params.id, deletedAt: null }).lean()]); if (!received.length && !sent.length) throw new AppError('Conversation not found', 404, 'NOT_FOUND'); await ReceivedEmail.updateMany({ conversationId: req.params.id, deletedAt: null, readAt: null }, { $set: { readAt: new Date() } }); res.json({ items: [...received.map(x => ({ ...x, box: 'inbox', date: x.receivedAt })), ...sent.map(x => ({ ...x, box: 'sent', date: x.sentAt }))].sort((a, b) => a.date - b.date) }); });
 app.post('/api/mailbox/sync', mailboxRateLimit, async (_req, res) => { let imported = 0; let existing = 0; let failed = 0; const rows = await listReceived(30); for (const row of (rows.data || rows).slice(0, 30)) { try { const outcome = await persistReceived(await receiveEmail(row.id)); outcome.created ? imported++ : existing++; } catch { failed++; } } res.json({ imported, alreadyExisting: existing, failed }); });
 app.post('/api/mailbox/send', mailboxRateLimit, async (req, res) => res.status(201).json(await sendMailboxEmail(mailboxInput(req.body))));
-app.post('/api/mailbox/conversations/:id/reply', mailboxRateLimit, async (req, res) => { const latest = await Promise.all([ReceivedEmail.findOne({ conversationId: req.params.id }).sort({ receivedAt: -1 }).lean(), SentMailboxEmail.findOne({ conversationId: req.params.id }).sort({ sentAt: -1 }).lean()]); const original = latest.filter(Boolean).sort((a, b) => new Date(b.receivedAt || b.sentAt) - new Date(a.receivedAt || a.sentAt))[0]; if (!original) throw new AppError('Conversation not found', 404, 'NOT_FOUND'); const input = mailboxInput({ ...req.body, to: req.body?.to || [original.from] }); input.subject = /^re:/i.test(input.subject) ? input.subject : `Re: ${original.subject}`; res.status(201).json(await sendMailboxEmail(input, { conversationId: req.params.id, inReplyTo: original.messageId, references: [...(original.references || []), original.messageId].filter(Boolean) })); });
+app.post('/api/mailbox/conversations/:id/reply', mailboxRateLimit, async (req, res) => { const [received, sent] = await Promise.all([ReceivedEmail.find({ conversationId: req.params.id, deletedAt: null }).lean(), SentMailboxEmail.find({ conversationId: req.params.id, deletedAt: null }).lean()]); const messages = [...received, ...sent].sort((a, b) => new Date(a.receivedAt || a.sentAt) - new Date(b.receivedAt || b.sentAt)); if (!messages.length) throw new AppError('Conversation not found', 404, 'NOT_FOUND'); const ours = new Set([normalizeEmail(env.emailFrom?.match(/<([^>]+)>/)?.[1] || env.emailFrom), normalizeEmail(env.emailReplyTo)].filter(Boolean)); const inbound = [...received].sort((a, b) => new Date(b.receivedAt) - new Date(a.receivedAt)).find(item => !ours.has(normalizeEmail(item.fromEmail))); const external = normalizeEmail(inbound?.fromEmail || sent.flatMap(item => item.to || []).map(normalizeEmail).find(email => !ours.has(email))); if (!external) throw new AppError('No external reply recipient is available.', 409, 'REPLY_RECIPIENT_UNAVAILABLE'); const parent = [...messages].reverse().find(item => normalizedMessageId(item.messageId)); if (!parent) throw new AppError('This conversation has no RFC Message-ID to reply to.', 409, 'REPLY_THREAD_UNAVAILABLE'); const input = mailboxInput({ ...req.body, to: req.body?.to || [external] }); if (input.to.some(email => ours.has(email))) throw new AppError('A mailbox reply must target an external recipient.', 400, 'VALIDATION_ERROR'); input.subject = /^re:/i.test(input.subject) ? input.subject : `Re: ${parent.subject}`; const references = messageIds(messages.flatMap(item => [...(item.references || []), item.messageId])); res.status(201).json(await sendMailboxEmail(input, { conversationId: req.params.id, inReplyTo: normalizedMessageId(parent.messageId), references })); });
 app.patch('/api/mailbox/conversations/:id/read', async (req, res) => { const readAt = req.body?.unread ? null : new Date(); await ReceivedEmail.updateMany({ conversationId: req.params.id, deletedAt: null }, { $set: { readAt } }); res.json({ ok: true }); });
 app.patch('/api/mailbox/conversations/:id/delete', async (req, res) => { const update = { $set: { deletedAt: req.body?.restore ? null : new Date() } }; await Promise.all([ReceivedEmail.updateMany({ conversationId: req.params.id }, update), SentMailboxEmail.updateMany({ conversationId: req.params.id }, update)]); res.json({ ok: true }); });
 app.delete('/api/mailbox/conversations/:id', mailboxRateLimit, async (req, res) => { if (req.body?.confirmation !== 'DELETE') throw new AppError('Type DELETE to permanently remove this conversation.', 400, 'CONFIRMATION_REQUIRED'); await Promise.all([ReceivedEmail.deleteMany({ conversationId: req.params.id, deletedAt: { $ne: null } }), SentMailboxEmail.deleteMany({ conversationId: req.params.id, deletedAt: { $ne: null } })]); res.json({ ok: true }); });
@@ -410,12 +411,14 @@ async function processEmailBatch(campaign, retryFailed = false) {
   const valid = claimed.filter(r => !invalid.includes(r)); const failures = {}; let sent = 0; let failed = invalid.length;
   if (invalid.length) failures.EMAIL_RECIPIENT_INVALID = invalid.length;
   try {
-    const results = valid.length ? await sendEmailBatch(valid.map(r => { const lead = leads.get(String(r.leadId)); return { to: lead.email, subject: renderTemplate(template.subject, lead), text: renderTemplate(template.body, lead) }; }), batchKey) : [];
+    // Use one RFC Message-ID per message; it is intentionally separate from Resend's provider id.
+    const outbound = valid.map(r => { const lead = leads.get(String(r.leadId)); const subject = renderTemplate(template.subject, lead); const text = renderTemplate(template.body, lead); const messageId = createRfcMessageId(env.emailFrom); return { recipient: r, lead, subject, text, messageId, headers: { 'Message-ID': messageId } }; });
+    const results = valid.length ? await sendEmailBatch(outbound.map(item => ({ to: item.lead.email, subject: item.subject, text: item.text, headers: item.headers })), batchKey) : [];
     await Promise.all(valid.map(async (r, index) => {
-      const result = results[index]; const lead = leads.get(String(r.leadId));
+      const result = results[index]; const lead = leads.get(String(r.leadId)); const sentMessage = outbound[index];
       if (!result?.ok) { failed += 1; failures[result?.code || 'EMAIL_PROVIDER_PARTIAL_FAILURE'] = (failures[result?.code || 'EMAIL_PROVIDER_PARTIAL_FAILURE'] || 0) + 1; return recordEmailFailure(r, campaign, lead, template, result?.reason || 'Provider did not accept this recipient.', result?.code || 'EMAIL_PROVIDER_PARTIAL_FAILURE'); }
       const sentAt = new Date(); sent += 1;
-      return Promise.all([CampaignRecipient.updateOne({ _id: r._id, status: 'sending', batchKey }, { $set: { status: 'sent', sentAt, providerMessageId: result.id, sendingLeaseExpiresAt: null } }), OutreachActivity.create({ leadId: r.leadId, campaignId: campaign._id, channel: 'email', templateId: template._id, recipient: lead.email, subject: renderTemplate(template.subject, lead), status: 'sent', sentAt, providerMessageId: result.id })]);
+      return Promise.all([CampaignRecipient.updateOne({ _id: r._id, status: 'sending', batchKey }, { $set: { status: 'sent', sentAt, providerMessageId: result.id, sendingLeaseExpiresAt: null } }), OutreachActivity.create({ leadId: r.leadId, campaignId: campaign._id, channel: 'email', templateId: template._id, recipient: lead.email, subject: sentMessage.subject, status: 'sent', sentAt, providerMessageId: result.id }), persistCampaignMailboxEmail({ campaign, recipient: r, lead, subject: sentMessage.subject, text: sentMessage.text, providerMessageId: result.id, messageId: sentMessage.messageId, sentAt })]);
     }));
   } catch (error) {
     const code = error.code || 'EMAIL_PROVIDER_REJECTED'; const reason = error.message || 'Email provider rejected the request.';
