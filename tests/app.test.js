@@ -4,7 +4,7 @@ import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCo
 import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, duplicateReasonForLead, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizeSocialProfileUrl, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 import crypto from 'node:crypto';
-import { conversationFor, verifyResendWebhook } from '../src/services/inbox.js';
+import { conversationFor, createRfcMessageId, messageIds, normalizedMessageId, verifyResendWebhook } from '../src/services/inbox.js';
 
 test('mailbox webhook verification rejects missing and invalid signatures and accepts a fresh signed body', () => {
   const raw = Buffer.from('{"type":"email.received"}'); const secret = `whsec_${Buffer.from('mailbox-test-secret').toString('base64')}`; const timestamp = String(Math.floor(Date.now() / 1000)); const id = 'msg_test';
@@ -18,6 +18,19 @@ test('mailbox threading uses reliable reply identifiers and avoids subject-only 
   const conversationId = 'conversation-1';
   assert.equal(conversationFor({ subject: 'Re: Proposal', inReplyTo: '<origin>', references: ['<origin>'] }, [{ conversationId, messageId: '<origin>', subject: 'Proposal' }]), conversationId);
   assert.notEqual(conversationFor({ from: 'a@example.test', fromEmail: 'a@example.test', to: ['b@example.test'], subject: 'Proposal', receivedAt: new Date() }, [{ conversationId, from: 'other@example.test', fromEmail: 'other@example.test', to: ['b@example.test'], subject: 'Proposal', date: new Date(), fallbackSignature: 'other@example.test|b@example.test|proposal' }]), conversationId);
+});
+
+test('mailbox RFC identifiers stay distinct from provider ids and References are normalized', () => {
+  const id = createRfcMessageId('LeadScout <outreach@verified.example>');
+  assert.match(id, /^<[0-9a-f-]+@verified\.example>$/);
+  assert.notEqual(id, 're_12345678-1234-1234-1234-123456789012');
+  assert.equal(normalizedMessageId(' <parent@verified.example> '), '<parent@verified.example>');
+  assert.deepEqual(messageIds('<root@verified.example> <parent@verified.example> <root@verified.example>'), ['<root@verified.example>', '<parent@verified.example>']);
+});
+
+test('mailbox threading joins a campaign or direct sent parent through In-Reply-To and References', () => {
+  const sent = { conversationId: 'campaign-thread', messageId: '<campaign@verified.example>', references: [], subject: 'Proposal', from: 'LeadScout <outreach@verified.example>', to: ['client@example.org'], date: new Date() };
+  assert.equal(conversationFor({ from: 'client@example.org', fromEmail: 'client@example.org', to: ['outreach@verified.example'], subject: 'Re: Proposal', inReplyTo: '<campaign@verified.example>', references: ['<campaign@verified.example>'], receivedAt: new Date() }, [sent]), 'campaign-thread');
 });
 
 test('normalizes domains without losing meaningful subdomains', () => {
