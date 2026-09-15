@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Sign in to LeadScout.">
+  <title>Sign in — LeadScout</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body class="login-page">
+  <main class="login-layout">
+    <section class="login-card" aria-labelledby="login-title">
+      <a class="login-brand" href="/login" aria-label="LeadScout sign in"><span class="brand-mark" aria-hidden="true">L</span><span>LeadScout<small>E-commerce research</small></span></a>
+      <div class="login-intro"><p class="eyebrow">Secure admin access</p><h1 id="login-title">Welcome back</h1><p>Sign in to continue to LeadScout.</p></div>
+      <form id="login-form" novalidate>
+        <div class="login-fields">
+          <label for="username">Username<input id="username" name="username" type="text" autocomplete="username" required></label>
+          <label for="password">Password<span class="password-field"><input id="password" name="password" type="password" autocomplete="current-password" required><button id="password-toggle" type="button" aria-label="Show password" aria-controls="password">Show</button></span></label>
+        </div>
+        <p id="login-error" class="login-error" role="alert" aria-live="assertive" hidden></p>
+        <button id="login-submit" class="button primary login-submit" type="submit">Sign in</button>
+      </form>
+    </section>
+  </main>
+  <script type="module" src="/js/login.js"></script>
+</body>
+</html>

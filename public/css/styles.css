@@ -41,6 +41,8 @@ button, a, input, select { -webkit-tap-highlight-color: transparent; }
 .nav-link:hover, .mobile-nav a:hover { color: #fff; background: var(--sidebar-hover); }
 .nav-link.active, .mobile-nav a.active { color: #fff; background: var(--sidebar-active); box-shadow: inset 3px 0 #a7ddcc; }
 .sidebar-note { margin: auto 8px 0; padding: 18px 0 0; border-top: 1px solid rgba(216, 237, 229, .17); color: #a7c0b9; font-size: 12px; line-height: 1.55; }
+.nav-sign-out { min-height:42px; margin:14px 8px 0; padding:9px 12px; border:1px solid rgba(216,237,229,.28); border-radius:var(--radius-sm); color:#d9e8e2; background:transparent; font-weight:750; text-align:left; cursor:pointer; }
+.nav-sign-out:hover { color:#fff; background:var(--sidebar-hover); }.nav-sign-out:focus-visible { outline:3px solid #9ed7c5; outline-offset:3px; }
 main { width: min(1440px, 100%); margin: 0 auto; padding: clamp(42px, 5vw, 72px) clamp(28px, 4.5vw, 72px) 64px; }
 .mobile-header, .mobile-nav { display: none; }
 
@@ -192,6 +194,7 @@ fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
   .mobile-nav { display: none; margin: -30px -32px 30px; padding: 9px 32px 17px; background: #143a33; }
   .mobile-nav.open { display: grid; gap: 4px; }
   .mobile-nav a { min-height: 44px; }
+  .mobile-nav .nav-sign-out { width:100%; margin:5px 0 0; }
 }
 @media (max-width: 760px) {
   body { overflow-x: hidden; }
@@ -205,6 +208,7 @@ fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
   .mobile-nav { display: none; margin: -25px -16px 25px; padding: 9px 16px 17px; background: #143a33; }
   .mobile-nav.open { display: grid; gap: 4px; }
   .mobile-nav a { min-height: 44px; }
+  .mobile-nav .nav-sign-out { width:100%; margin:5px 0 0; }
   .page-heading { margin-bottom: 23px; }
   .library-heading { display: block; }
   .result-count { margin-top: 12px; }
@@ -296,6 +300,25 @@ textarea { width:100%; min-height:90px; padding:10px 12px; border:1px solid var(
 /* Immediate feedback for user-triggered API actions. */
 .button[aria-busy="true"] { gap: 7px; }
 .button-spinner { width: 14px; height: 14px; margin: 0; border-width: 2px; border-color: currentColor; border-top-color: transparent; }
+
+/* Authentication */
+.login-page { min-height:100vh; background:radial-gradient(circle at top left, #e1f1ea 0, transparent 34%), var(--canvas); }
+.login-layout { display:grid; min-height:100vh; place-items:center; padding:clamp(20px, 5vw, 48px); }
+.login-card { width:min(100%, 430px); padding:clamp(27px, 6vw, 42px); border:1px solid var(--line); border-radius:var(--radius-lg); background:var(--surface); box-shadow:var(--shadow-md); }
+.login-brand { display:flex; align-items:center; gap:11px; color:var(--brand-dark); text-decoration:none; font-size:21px; font-weight:780; letter-spacing:-.03em; }
+.login-brand small { display:block; margin-top:1px; color:var(--muted); font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.login-intro { margin:34px 0 27px; }
+.login-intro h1 { margin-bottom:9px; font-size:clamp(30px, 7vw, 38px); }
+.login-intro > p:last-child { margin:0; color:var(--muted); }
+.login-fields { display:grid; gap:18px; }
+.password-field { position:relative; display:block; }
+.password-field input { padding-right:68px; }
+.password-field button { position:absolute; top:50%; right:7px; min-width:52px; min-height:32px; padding:4px 8px; border:0; border-radius:7px; color:var(--brand-dark); background:var(--brand-pale); font-size:12px; font-weight:800; transform:translateY(-50%); cursor:pointer; }
+.login-error { margin:17px 0 0; padding:10px 12px; border:1px solid #e6b7b1; border-radius:var(--radius-sm); color:var(--danger-dark); background:var(--danger-pale); font-size:13px; font-weight:700; }
+.login-submit { width:100%; min-height:46px; margin-top:22px; justify-content:center; }
+.login-card input:focus-visible, .password-field button:focus-visible, .login-brand:focus-visible { outline:3px solid #9ed7c5; outline-offset:3px; }
+@media (max-width:380px) { .login-layout { padding:16px; align-items:start; }.login-card { margin-top:20px; padding:25px 20px; }.login-intro { margin:27px 0 23px; } }
+@media (prefers-reduced-motion:reduce) { .login-card, .login-card * { transition:none !important; } }
 
 .lead-pagination { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; color:var(--muted); font-size:13px; font-weight:700; }
 .lead-pagination p { margin:0; }
