@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline } from '../src/app.js';
-import { activeJobFilter, buildDiscoveryPrompt, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
-import { assertLeadStatus, isValidPublicEmail, normalizeDomain, normalizeEmail, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
+import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
+import { assertLeadStatus, isValidPublicEmail, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizeSocialProfileUrl, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 
 test('normalizes domains without losing meaningful subdomains', () => {
   assert.equal(normalizeDomain('HTTPS://WWW.Example.COM/Test?utm_source=x'), 'example.com');
@@ -106,6 +106,19 @@ test('discovery modes run independent channels and hybrid merges cross-channel i
 test('candidate merging keeps one canonical lead for an official-domain social match', () => {
   const merged = mergeCandidates([{ ...ecommerceCandidate, discoverySources: ['website'], sourceUrls: ['https://glowgoods.example.org'] }, { ...ecommerceCandidate, discoverySources: ['social'], socialProfiles: { instagram: 'https://instagram.com/glowgoods' }, sourceUrls: ['https://instagram.com/glowgoods'] }]);
   assert.equal(merged.length, 1); assert.deepEqual(merged[0].discoverySources.sort(), ['social', 'website']);
+});
+test('identity matching normalizes social profiles, domains, and company suffixes conservatively', () => {
+  assert.equal(normalizeSocialProfileUrl('https://www.instagram.com/abc/?utm_source=search'), 'instagram.com/abc');
+  assert.equal(normalizeSocialProfileUrl('instagram.com/abc/'), 'instagram.com/abc');
+  assert.equal(normalizeDomain('https://www.abc.com/products'), 'abc.com');
+  assert.equal(normalizeBusinessName('ABC Fashion Private Limited'), 'abc fashion');
+  const website = { ...ecommerceCandidate, businessName: 'ABC Fashion Pvt Ltd', officialWebsite: 'https://abc.com', email: 'hello@abc.com', identityLocation: 'Delhi', discoverySources: ['website'] };
+  const sparseSocial = { ...ecommerceCandidate, businessName: 'ABC Fashion Private Limited', officialWebsite: null, email: null, phone: null, identityLocation: 'Delhi', socialProfiles: { instagram: 'https://www.instagram.com/abc/' }, discoverySources: ['social'] };
+  const otherCity = { ...sparseSocial, identityLocation: 'Mumbai', socialProfiles: { instagram: 'https://instagram.com/abc-mumbai' } };
+  assert.equal(candidatesMatch(website, sparseSocial), true);
+  assert.equal(candidatesMatch(website, otherCity), false);
+  const merged = mergeCandidates([website, sparseSocial]);
+  assert.equal(merged.length, 1); assert.equal(normalizeSocialProfileUrl(merged[0].socialProfiles.instagram), 'instagram.com/abc');
 });
 test('discovery input defaults safely to hybrid and rejects unknown modes', () => {
   assert.equal(parseDiscoveryInput({ category: 'Fashion', location: 'India', requestedCount: '20' }).mode, 'hybrid');
@@ -276,6 +289,8 @@ test('client invalidates stale polling callbacks when cancellation completes', (
   assert.match(client, /generation !== state\.pollGeneration/);
   assert.match(client, /stopPolling\(\); setDiscoveryRunning\(true, true\)/);
   assert.match(client, /\$\('#job-progress'\)\.hidden = true/);
+  assert.match(client, /Channel stages below reflect persisted server progress/);
+  assert.match(client, /aria-valuetext/);
 });
 
 import { emailConfiguration, normalizeBatchResponse, sendEmailBatch } from '../src/services/email.js';

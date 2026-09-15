@@ -30,6 +30,23 @@ export function normalizeDomain(value) {
   return hostname.startsWith('www.') ? hostname.slice(4) : hostname;
 }
 export const normalizeEmail = (value) => typeof value === 'string' ? value.trim().toLowerCase() : null;
+// Keep identity keys deliberately small and deterministic.  They are used for
+// matching only; the original, user-facing name remains untouched.
+export function normalizeBusinessName(value) {
+  if (typeof value !== 'string') return null;
+  const name = value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  if (!name) return null;
+  return name.replace(/\b(?:private\s+limited|pvt\.?\s*ltd\.?|private|limited|ltd\.?)\b/g, ' ').replace(/\s+/g, ' ').trim() || null;
+}
+export function normalizeSocialProfileUrl(value) {
+  const url = normalizeUrl(value);
+  if (!url) return null;
+  const parsed = new URL(url); const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+  if (!['instagram.com', 'facebook.com', 'linkedin.com'].includes(host)) return null;
+  const path = parsed.pathname.replace(/\/+$/, '');
+  // A host alone is not a profile and must never become a cross-business key.
+  return path && path !== '/' ? `${host}${path.toLowerCase()}` : null;
+}
 export function isValidPublicEmail(value) {
   const email = normalizeEmail(value);
   if (!email || email.length > 254 || PLACEHOLDER_EMAILS.has(email) || /@(example\.(com|org|net)|invalid|test)$/i.test(email)) return false;
@@ -42,6 +59,10 @@ export function normalizePhone(value) {
   if (!phone || phone.length > 80 || !/^[+()\d.\- xext]+$/i.test(phone)) return null;
   const digits = phone.replace(/\D/g, '');
   return digits.length >= 7 && digits.length <= 15 ? phone : null;
+}
+export function normalizePhoneIdentity(value) {
+  const phone = normalizePhone(value);
+  return phone ? phone.replace(/\D/g, '') : null;
 }
 export function isSafePublicUrl(value) {
   const url = normalizeUrl(value); if (!url) return false;
