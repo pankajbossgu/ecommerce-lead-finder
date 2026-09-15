@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline } from '../src/app.js';
-import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
+import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, duplicateReasonForLead, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizeSocialProfileUrl, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 
 test('normalizes domains without losing meaningful subdomains', () => {
@@ -12,6 +12,8 @@ test('normalizes domains without losing meaningful subdomains', () => {
 });
 test('normalizes and validates public business email addresses', () => {
   assert.equal(normalizeEmail('  Sales@Example.CO.UK '), 'sales@example.co.uk');
+  assert.equal(normalizeEmail('   '), null);
+  assert.equal(normalizeEmail(null), null);
   assert.equal(isValidPublicEmail('sales@brand.co.uk'), true);
   assert.equal(isValidPublicEmail('hello@example.com'), false);
   assert.equal(isValidPublicEmail('not-an-email'), false);
@@ -174,6 +176,22 @@ import { resolvedDuplicateFilter } from '../src/services.js';
 test('duplicate rule only filters persisted saved and discarded businesses', () => {
   assert.deepEqual(resolvedDuplicateFilter('brand.example'), { domain: 'brand.example', status: { $in: ['saved', 'discarded'] } });
   assert.equal(resolvedDuplicateFilter('brand.example').status.$in.includes('new'), false);
+});
+
+test('lead duplicate reasons distinguish normalized domain and email collisions', () => {
+  const lead = { domain: 'abc.example', email: 'sales@abc.example' };
+  assert.equal(duplicateReasonForLead(lead, [{ domain: 'abc.example', emailNormalized: 'other@abc.example', status: 'saved' }]), 'duplicate_domain');
+  assert.equal(duplicateReasonForLead(lead, [{ domain: 'other.example', email: ' SALES@ABC.EXAMPLE ', status: 'new' }]), 'duplicate_email');
+  assert.equal(duplicateReasonForLead(lead, [{ domain: 'abc.example', emailNormalized: 'sales@abc.example', status: 'discarded' }]), 'duplicate_domain_and_email');
+  assert.equal(duplicateReasonForLead(lead, [{ domain: 'abc.example', emailNormalized: 'other@abc.example', status: 'new', searchJobId: 'job-a' }], 'job-a'), 'duplicate_domain');
+});
+
+test('email identity indexes are partial and legacy migration preserves conflicting records', () => {
+  const models = fs.readFileSync(new URL('../src/models.js', import.meta.url), 'utf8');
+  assert.match(models, /emailNormalized: 1 }, \{ unique: true, partialFilterExpression: \{ emailNormalized: \{ \$type: 'string' \}/);
+  assert.match(models, /legacyEmailDuplicateOf/);
+  assert.match(models, /claimedEmails/);
+  assert.match(models, /recipientNormalized/);
 });
 
 test('current-job result filter keeps a job scoped and bulk lifecycle statuses are valid', () => {

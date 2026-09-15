@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
+import { isValidPublicEmail, normalizeEmail } from './utils.js';
 
 const number = (name, fallback) => { const value = Number(process.env[name] ?? fallback); return Number.isFinite(value) ? value : fallback; };
 const databaseName = 'ecommerce_lead_finder';
@@ -14,13 +15,52 @@ async function migrateLegacyDomainIndex() {
   const outdatedResolved = indexes.find(index => index.name === 'resolved_domain_unique' && JSON.stringify(index.key) !== JSON.stringify({ domain: 1 }));
   if (legacy) await mongoose.connection.collection('leads').dropIndex(legacy.name);
   if (outdatedResolved) await mongoose.connection.collection('leads').dropIndex(outdatedResolved.name);
+  // Reserve one deterministic identity for every pre-existing valid email
+  // before creating the unique index. We retain every legacy lead (including
+  // conflicting records) rather than deleting or rewriting business data.
+  // The earliest document owns the indexed key; later conflicts retain their
+  // original email and are marked for administrative review.
+  const leads = mongoose.connection.collection('leads');
+  const claimedEmails = new Map();
+  const operations = [];
+  const cursor = leads.find({}, { projection: { _id: 1, email: 1 } }).sort({ createdAt: 1, _id: 1 });
+  for await (const legacyLead of cursor) {
+    const email = normalizeEmail(legacyLead.email);
+    const validEmail = isValidPublicEmail(email);
+    const ownerId = validEmail ? claimedEmails.get(email) : null;
+    if (validEmail && !ownerId) {
+      claimedEmails.set(email, legacyLead._id);
+      operations.push({ updateOne: { filter: { _id: legacyLead._id }, update: { $set: { email, emailNormalized: email }, $unset: { legacyEmailDuplicateOf: '' } } } });
+    } else if (validEmail) {
+      operations.push({ updateOne: { filter: { _id: legacyLead._id }, update: { $set: { email, legacyEmailDuplicateOf: ownerId }, $unset: { emailNormalized: '' } } } });
+    } else {
+      operations.push({ updateOne: { filter: { _id: legacyLead._id }, update: { $unset: { emailNormalized: '', legacyEmailDuplicateOf: '' } } } });
+    }
+    if (operations.length === 500) { await leads.bulkWrite(operations); operations.length = 0; }
+  }
+  if (operations.length) await leads.bulkWrite(operations);
+  const emailIndex = (await leads.indexes().catch(() => [])).find(index => index.name === 'normalized_email_unique');
+  if (emailIndex && (!emailIndex.unique || JSON.stringify(emailIndex.key) !== JSON.stringify({ emailNormalized: 1 }))) await leads.dropIndex(emailIndex.name);
+  // Activity history survives campaign deletion. Backfill its canonical email
+  // key so it can continue to suppress outreach even after a lead is removed.
+  const activities = mongoose.connection.collection('outreachactivities');
+  const activityOps = [];
+  const activityCursor = activities.find({ channel: 'email' }, { projection: { _id: 1, recipient: 1 } });
+  for await (const activity of activityCursor) {
+    const recipientNormalized = normalizeEmail(activity.recipient);
+    activityOps.push({ updateOne: { filter: { _id: activity._id }, update: recipientNormalized ? { $set: { recipientNormalized } } : { $unset: { recipientNormalized: '' } } } });
+    if (activityOps.length === 500) { await activities.bulkWrite(activityOps); activityOps.length = 0; }
+  }
+  if (activityOps.length) await activities.bulkWrite(activityOps);
   await Lead.createIndexes();
   indexesMigrated = true;
 }
 export async function connectDatabase() {
   if (mongoose.connection.readyState === 1) { await migrateLegacyDomainIndex(); return mongoose.connection; }
   if (!env.mongoUri) throw new Error('MONGODB_URI is not configured');
-  if (!connectPromise) connectPromise = mongoose.connect(env.mongoUri, { dbName: databaseName, serverSelectionTimeoutMS: 8000 }).catch((error) => { connectPromise = undefined; throw error; });
+  // Index creation is performed by the migration below, after legacy email
+  // identities are made safe for the partial unique index.
+  if (!connectPromise) connectPromise = mongoose.connect(env.mongoUri, { dbName: databaseName, serverSelectionTimeoutMS: 8000, autoIndex: false }).catch((error) => { connectPromise = undefined; throw error; });
   const connection = await connectPromise; await migrateLegacyDomainIndex(); return connection;
 }
 
@@ -28,7 +68,7 @@ const leadSchema = new mongoose.Schema({
   businessName: { type: String, required: true, trim: true, maxlength: 200 },
   // This is deliberately not globally unique: unresolved leads can be cleared and rediscovered.
   domain: { type: String, required: true, lowercase: true, trim: true },
-  website: { type: String, required: true }, email: { type: String, default: null, lowercase: true, trim: true }, phone: { type: String, default: null },
+  website: { type: String, required: true }, email: { type: String, default: null, set: normalizeEmail }, emailNormalized: { type: String, default: null, set: normalizeEmail }, legacyEmailDuplicateOf: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead', default: null }, phone: { type: String, default: null },
   status: { type: String, enum: ['new', 'saved', 'discarded'], default: 'new', index: true },
   searchJobId: { type: mongoose.Schema.Types.ObjectId, ref: 'SearchJob', default: null, index: true },
   category: { type: String, required: true }, location: { type: String, required: true }, notes: { type: String, default: '', maxlength: 2000 }, keywords: { type: String, default: '' }, isEcommerce: { type: Boolean, required: true },
@@ -37,7 +77,14 @@ const leadSchema = new mongoose.Schema({
   savedAt: { type: Date, default: null, index: true },
   notUsefulAt: { type: Date, default: null, index: true }
 }, { timestamps: true, versionKey: false });
+leadSchema.pre('validate', function normalizeLeadEmail(next) {
+  this.email = normalizeEmail(this.email);
+  this.emailNormalized = isValidPublicEmail(this.email) ? this.email : null;
+  if (this.status === 'saved' && !isValidPublicEmail(this.email)) this.invalidate('email', 'A saved lead requires a valid public business email');
+  next();
+});
 leadSchema.index({ domain: 1 }, { unique: true, partialFilterExpression: { status: { $in: ['saved', 'discarded'] } }, name: 'resolved_domain_unique' });
+leadSchema.index({ emailNormalized: 1 }, { unique: true, partialFilterExpression: { emailNormalized: { $type: 'string' } }, name: 'normalized_email_unique' });
 leadSchema.index({ searchJobId: 1, domain: 1 }, { unique: true, partialFilterExpression: { searchJobId: { $type: 'objectId' } }, name: 'job_domain_unique' });
 leadSchema.index({ searchJobId: 1, status: 1, discoveredAt: -1 });
 leadSchema.index({ status: 1, savedAt: -1 });
@@ -84,7 +131,8 @@ const recipientSchema = new mongoose.Schema({
 }, { timestamps: true, versionKey: false });
 recipientSchema.index({ campaignId: 1, leadId: 1, channel: 1 }, { unique: true }); recipientSchema.index({ status: 1, sentAt: -1 });
 const activitySchema = new mongoose.Schema({
-  leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead', required: true, index: true }, campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign', required: true, index: true }, channel: { type: String, enum: ['email', 'whatsapp'], required: true, index: true }, templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', default: null }, recipient: { type: String, required: true }, subject: { type: String, default: null, maxlength: 200 }, status: { type: String, enum: ['sent', 'manual_sent', 'failed', 'skipped'], required: true, index: true }, sentAt: Date, failedAt: Date, failureReason: { type: String, maxlength: 500 }, providerMessageId: { type: String, maxlength: 200 }, nextFollowUpAt: { type: Date, default: null }
+  leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead', required: true, index: true }, campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign', required: true, index: true }, channel: { type: String, enum: ['email', 'whatsapp'], required: true, index: true }, templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachTemplate', default: null }, recipient: { type: String, required: true }, recipientNormalized: { type: String, default: null, set: normalizeEmail }, subject: { type: String, default: null, maxlength: 200 }, status: { type: String, enum: ['sent', 'manual_sent', 'failed', 'skipped'], required: true, index: true }, sentAt: Date, failedAt: Date, failureReason: { type: String, maxlength: 500 }, providerMessageId: { type: String, maxlength: 200 }, nextFollowUpAt: { type: Date, default: null }
 }, { timestamps: true, versionKey: false });
-activitySchema.index({ leadId: 1, sentAt: -1, createdAt: -1 }); activitySchema.index({ campaignId: 1, createdAt: -1 }); activitySchema.index({ channel: 1, status: 1, sentAt: -1 });
+activitySchema.pre('validate', function normalizeActivityRecipient(next) { this.recipientNormalized = this.channel === 'email' ? normalizeEmail(this.recipient) : null; next(); });
+activitySchema.index({ leadId: 1, sentAt: -1, createdAt: -1 }); activitySchema.index({ campaignId: 1, createdAt: -1 }); activitySchema.index({ channel: 1, status: 1, sentAt: -1 }); activitySchema.index({ channel: 1, recipientNormalized: 1, status: 1 });
 export const Lead = mongoose.model('Lead', leadSchema); export const SearchJob = mongoose.model('SearchJob', jobSchema); export const SearchHistory = mongoose.model('SearchHistory', historySchema); export const OutreachTemplate = mongoose.model('OutreachTemplate', templateSchema); export const Campaign = mongoose.model('Campaign', campaignSchema); export const CampaignRecipient = mongoose.model('CampaignRecipient', recipientSchema); export const OutreachActivity = mongoose.model('OutreachActivity', activitySchema);

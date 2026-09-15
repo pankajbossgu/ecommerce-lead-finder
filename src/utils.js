@@ -29,7 +29,14 @@ export function normalizeDomain(value) {
   const hostname = new URL(url).hostname.toLowerCase();
   return hostname.startsWith('www.') ? hostname.slice(4) : hostname;
 }
-export const normalizeEmail = (value) => typeof value === 'string' ? value.trim().toLowerCase() : null;
+// This is the only email identity transformation in the application. Do not
+// apply provider-specific dot or plus-address rules: those addresses can be
+// distinct for business mail systems.
+export const normalizeEmail = (value) => {
+  if (typeof value !== 'string') return null;
+  const email = value.trim().toLowerCase();
+  return email || null;
+};
 // Keep identity keys deliberately small and deterministic.  They are used for
 // matching only; the original, user-facing name remains untouched.
 export function normalizeBusinessName(value) {
