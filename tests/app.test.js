@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline } from '../src/app.js';
+import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline, manualLeadInput } from '../src/app.js';
 import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, duplicateReasonForLead, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizeSocialProfileUrl, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 import crypto from 'node:crypto';
@@ -31,6 +31,29 @@ test('mailbox RFC identifiers stay distinct from provider ids and References are
 test('mailbox threading joins a campaign or direct sent parent through In-Reply-To and References', () => {
   const sent = { conversationId: 'campaign-thread', messageId: '<campaign@verified.example>', references: [], subject: 'Proposal', from: 'LeadScout <outreach@verified.example>', to: ['client@example.org'], date: new Date() };
   assert.equal(conversationFor({ from: 'client@example.org', fromEmail: 'client@example.org', to: ['outreach@verified.example'], subject: 'Re: Proposal', inReplyTo: '<campaign@verified.example>', references: ['<campaign@verified.example>'], receivedAt: new Date() }, [sent]), 'campaign-thread');
+});
+
+
+test('manual lead validation requires website and business email while keeping phone optional', () => {
+  const base = { businessName: 'Acme Store', website: 'https://acme.co', email: 'sales@acme.co', category: 'Retail', location: 'London' };
+  const noPhone = manualLeadInput(base);
+  assert.equal(noPhone.phone, null);
+  assert.equal(noPhone.email, 'sales@acme.co');
+  assert.equal(manualLeadInput({ ...base, phone: '+44 20 7946 0958' }).phone, '+44 20 7946 0958');
+  assert.throws(() => manualLeadInput({ ...base, email: '' }), /Email must be a valid business email/);
+  assert.throws(() => manualLeadInput({ ...base, email: 'not-an-email' }), /Email must be a valid business email/);
+  assert.throws(() => manualLeadInput({ ...base, website: 'javascript:alert(1)' }), /Website must be a valid public URL/);
+});
+
+test('manual lead UI and API preserve website/email identity rules without phone uniqueness', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /id=\"manual-email\"[^`]*required/);
+  assert.match(client, /Website and email are required\. Phone is optional\./);
+  assert.match(app, /if \(!website \|\| !domain \|\| !isSafePublicUrl\(website\)\)/);
+  assert.match(app, /if \(!email \|\| !isValidPublicEmail\(email\)\)/);
+  assert.match(app, /findLeadDuplicateReason\(input\)/);
+  assert.doesNotMatch(app.slice(app.indexOf('export function manualLeadInput'), app.indexOf('export function managementPipeline')), /phone.*unique/i);
 });
 
 test('normalizes domains without losing meaningful subdomains', () => {
