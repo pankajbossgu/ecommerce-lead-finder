@@ -402,3 +402,20 @@ test('saved lead management pagination is capped at 20 and preserves filtered pa
   assert.match(client, /data-lead-page/);
   assert.match(client, /state\.pages\.saved = 1/);
 });
+
+test('saved lead all-matching selection survives pagination and retains the campaign request contract', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  // Selecting all matching leads immediately selects the rows already rendered,
+  // and savedLeadSelected drives every later page render from that mode.
+  assert.match(client, /id === 'saved-select-matching'.*state\.savedSelectAll = true.*updateSavedSelection/s);
+  assert.match(client, /function savedLeadSelected\(id\) \{ return state\.savedSelectAll \? !state\.savedExcluded\.has\(id\) : state\.savedSelected\.has\(id\); \}/);
+  assert.match(client, /id="saved-select-all"[^`]*state\.savedSelectAll[^`]*'checked'/);
+  assert.match(client, /class="saved-lead-select"[^`]*savedLeadSelected\(l\._id\)[^`]*'checked'/);
+  assert.match(client, /state\.savedSelectAll \? `\$\{state\.savedTotal - state\.savedExcluded\.size\} matching leads`/);
+  assert.match(client, /state\.savedExcluded\.add\(e\.target\.dataset\.id\)/);
+  // All matching selection still delegates filtered recipient resolution to the server.
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(client, /selectAllMatching: true, \.\.\.state\.filters\.saved, excludedLeadIds: \[\.\.\.state\.savedExcluded\], includeContacted/);
+  assert.match(app, /body\?\.selectAllMatching === true/);
+  assert.match(app, /excludedLeadIds/);
+});
