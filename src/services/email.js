@@ -33,7 +33,7 @@ export async function sendEmailBatch(messages, idempotencyKey, config = env, res
   const { Resend } = resendFactory ? { Resend: resendFactory } : await import('resend');
   const resend = new Resend(config.resendApiKey);
   try {
-    const response = await resend.batch.send(messages.map(message => ({ from: config.emailFrom, to: [message.to], subject: message.subject, text: message.text })), { idempotencyKey });
+    const response = await resend.batch.send(messages.map(message => ({ from: config.emailFrom, to: [message.to], subject: message.subject, text: message.text, ...(message.headers ? { headers: message.headers } : {}) })), { idempotencyKey });
     return normalizeBatchResponse(response, messages.length);
   } catch (error) {
     if (error instanceof AppError) throw error;
