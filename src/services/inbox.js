@@ -72,6 +72,6 @@ export async function sendMailboxEmail(input, thread = null) {
 }
 export async function persistCampaignMailboxEmail({ campaign, recipient, lead, subject, text, providerMessageId, messageId, sentAt }) {
   const rfcMessageId = normalizedMessageId(messageId) || createRfcMessageId(env.emailFrom);
-  const record = { campaignId: campaign._id, campaignRecipientId: recipient._id, leadId: lead._id, source: 'campaign', from: env.emailFrom, to: [lead.email], cc: [], bcc: [], replyTo: env.emailReplyTo ? [env.emailReplyTo] : [], subject, text, html: '', messageId: rfcMessageId, conversationId: crypto.randomUUID(), sentAt, attachments: [], resendEmailId: providerMessageId, providerMessageId };
+  const record = { campaignId: campaign._id, campaignRecipientId: recipient._id, leadId: lead._id, source: 'campaign', from: env.emailFrom, to: [lead.email], cc: [], bcc: [], replyTo: env.emailReplyTo ? [env.emailReplyTo] : [], subject, text, html: '', headers: { 'Message-ID': rfcMessageId }, messageId: rfcMessageId, conversationId: crypto.randomUUID(), sentAt, attachments: [], resendEmailId: providerMessageId, providerMessageId };
   try { return await SentMailboxEmail.findOneAndUpdate({ campaignRecipientId: recipient._id }, { $setOnInsert: record }, { upsert: true, new: true }).lean(); } catch (error) { if (error?.code === 11000) return SentMailboxEmail.findOne({ campaignRecipientId: recipient._id }).lean(); throw error; }
 }
