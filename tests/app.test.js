@@ -507,3 +507,35 @@ test('mailbox accepts inbound mail only through the webhook and exposes no manua
   assert.doesNotMatch(client, /mailbox-sync|\/api\/mailbox\/sync/);
   assert.doesNotMatch(html, /mailbox-sync|>Sync</);
 });
+
+test('mailbox counts and Trash operations use bounded, soft-delete-safe API contracts', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8'); const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8'); const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(app, /app\.get\('\/api\/mailbox\/counts'/);
+  assert.match(app, /app\.post\('\/api\/mailbox\/messages\/restore', mailboxRateLimit/);
+  assert.match(app, /app\.post\('\/api\/mailbox\/messages\/permanent-delete', mailboxRateLimit/);
+  assert.match(app, /deletedAt: \{ \$ne: null \}/);
+  assert.match(app, /req\.query\.trash === 'true'/);
+  assert.match(client, /loadMailboxCounts\(\)/);
+  assert.match(client, /data-open-trash-mail/);
+  assert.match(client, /mailbox-restore-selected/);
+  assert.match(client, /mailbox-permanent-delete-selected/);
+  assert.match(html, /mailbox-trash-count/);
+});
+
+test('Find Leads has a compact mobile presentation and Lead Management reuses discovery sources', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8'); const css = fs.readFileSync(new URL('../public/css/styles.css', import.meta.url), 'utf8');
+  assert.match(client, /function sourceLabel\(lead\)/);
+  assert.match(client, /new-leads-mobile/);
+  assert.match(client, /<details><summary>Details<\/summary>/);
+  assert.match(client, /management-table.*source-badge/s);
+  assert.match(css, /\.new-leads-mobile \{ display:none; \}/);
+  assert.match(css, /@media \(max-width:760px\) \{ \.new-leads-desktop \{ display:none; \}/);
+});
+
+test('mailbox badge totals are independent from search-result totals', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /async function loadMailboxCounts\(\)/);
+  assert.doesNotMatch(client, /mailbox-inbox-count'\)\.textContent = data\.total/);
+  assert.doesNotMatch(client, /mailbox-sent-count'\)\.textContent = data\.total/);
+  assert.doesNotMatch(client, /mailbox-trash-count'\)\.textContent = data\.total/);
+});
