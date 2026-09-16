@@ -531,3 +531,11 @@ test('Find Leads has a compact mobile presentation and Lead Management reuses di
   assert.match(css, /\.new-leads-mobile \{ display:none; \}/);
   assert.match(css, /@media \(max-width:760px\) \{ \.new-leads-desktop \{ display:none; \}/);
 });
+
+test('mailbox badge totals are independent from search-result totals', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /async function loadMailboxCounts\(\)/);
+  assert.doesNotMatch(client, /mailbox-inbox-count'\)\.textContent = data\.total/);
+  assert.doesNotMatch(client, /mailbox-sent-count'\)\.textContent = data\.total/);
+  assert.doesNotMatch(client, /mailbox-trash-count'\)\.textContent = data\.total/);
+});
