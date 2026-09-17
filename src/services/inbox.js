@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { env, Lead, ReceivedEmail, SentMailboxEmail } from '../models.js';
 import { AppError, normalizeEmail } from '../utils.js';
+import { sendBrevoEmail } from './brevo.js';
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const address = value => typeof value === 'string' ? (value.match(/<([^>]+)>/)?.[1] || value).trim() : '';
@@ -68,6 +69,10 @@ export async function sendMailboxEmail(input, thread = null) {
   const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.resendApiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); const result = await response.json().catch(() => ({}));
   if (!response.ok || result.error) throw new AppError('The email provider rejected this message.', 502, 'EMAIL_PROVIDER_REJECTED'); const providerMessageId = result.id || result.data?.id || null;
   return SentMailboxEmail.create({ from: env.emailFrom, ...input, replyTo: env.emailReplyTo ? [env.emailReplyTo] : [], html: '', messageId, inReplyTo: thread?.inReplyTo ? normalizedMessageId(thread.inReplyTo) : null, references, sentAt: new Date(), conversationId: thread?.conversationId || crypto.randomUUID(), attachments: [], resendEmailId: providerMessageId, providerMessageId, source: 'direct' });
+}
+export async function sendBrevoMailboxEmail(input) {
+  const sent = await sendBrevoEmail(input);
+  return SentMailboxEmail.create({ from: sent.from, ...input, replyTo: env.emailReplyTo ? [env.emailReplyTo] : [], html: '', messageId: null, inReplyTo: null, references: [], sentAt: new Date(), conversationId: crypto.randomUUID(), attachments: [], resendEmailId: null, providerMessageId: sent.id, source: 'direct' });
 }
 export async function persistCampaignMailboxEmail({ campaign, recipient, lead, subject, text, providerMessageId, messageId, sentAt }) {
   const rfcMessageId = normalizedMessageId(messageId) || createRfcMessageId(env.emailFrom);
