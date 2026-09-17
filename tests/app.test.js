@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline, manualLeadInput } from '../src/app.js';
+import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline, manualLeadInput, resolveAmbiguousBrevoBatch } from '../src/app.js';
 import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, duplicateReasonForLead, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizeSocialProfileUrl, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 import crypto from 'node:crypto';
@@ -393,13 +393,14 @@ test('email sending preserves batch idempotency and maps successful provider ids
 });
 test('Brevo campaign sending submits up to 100 message versions in one request', async () => {
   const calls = []; const messages = Array.from({ length: 100 }, (_value, index) => ({ to: `recipient-${index}@example.org`, subject: `Subject ${index}`, text: `Text ${index}`, headers: { 'Message-ID': `<${index}@example.org>` }, replyTo: 'replies@example.org' }));
-  const request = async (...args) => { calls.push(args); return { ok: true, json: async () => ({ messageId: 'brevo-batch-id' }) }; };
+  const messageIds = messages.map((_message, index) => `brevo-message-${index}`);
+  const request = async (...args) => { calls.push(args); return { ok: true, json: async () => ({ messageIds }) }; };
   const result = await sendBrevoEmailBatch(messages, { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example', emailName: 'SmartLocator' }, request);
   assert.equal(calls.length, 1); assert.equal(calls[0][0], 'https://api.brevo.com/v3/smtp/email');
   const payload = JSON.parse(calls[0][1].body);
   assert.deepEqual(payload.sender, { name: 'SmartLocator', email: 'from@verified.example' }); assert.equal(payload.messageVersions.length, 100);
   assert.deepEqual(payload.messageVersions[0], { to: [{ email: 'recipient-0@example.org' }], subject: 'Subject 0', textContent: 'Text 0', replyTo: { email: 'replies@example.org' }, headers: { 'Message-ID': '<0@example.org>' } });
-  assert.deepEqual(result, Array.from({ length: 100 }, () => ({ ok: true, id: 'brevo-batch-id' })));
+  assert.deepEqual(result, messageIds.map(id => ({ ok: true, id })));
   for (const size of [1, 10, 100, 100, 50]) await sendBrevoEmailBatch(messages.slice(0, size), { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, request);
   assert.deepEqual(calls.map(([_url, options]) => JSON.parse(options.body).messageVersions.length), [100, 1, 10, 100, 100, 50]);
   assert.deepEqual(await sendBrevoEmailBatch([], { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, request), []);
@@ -408,6 +409,17 @@ test('Brevo campaign sending submits up to 100 message versions in one request',
 });
 test('Brevo campaign batches identify transport failures as ambiguous', async () => {
   await assert.rejects(sendBrevoEmailBatch([{ to: 'recipient@example.org', subject: 'Subject', text: 'Text' }], { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, async () => { throw new TypeError('network timeout'); }), error => error.code === 'EMAIL_PROVIDER_AMBIGUOUS');
+});
+test('ambiguous Brevo batches can be manually resolved without a resend', async () => {
+  const recipients = [{ _id: 'recipient-1', leadId: 'lead-1', templateId: 'template-1', recipient: 'first@example.org' }, { _id: 'recipient-2', leadId: 'lead-2', templateId: 'template-1', recipient: 'second@example.org' }];
+  const updates = []; const activities = [];
+  const recipientModel = { find: filter => ({ lean: async () => { assert.deepEqual(filter, { campaignId: 'campaign-1', channel: 'email', status: 'sending', providerAcceptanceUnknown: true }); return recipients; } }), updateMany: async (...args) => updates.push(args) };
+  const activityModel = { create: async activity => activities.push(activity) };
+  const resolvedAt = new Date('2026-09-17T00:00:00.000Z');
+  assert.equal(await resolveAmbiguousBrevoBatch('campaign-1', recipientModel, activityModel, resolvedAt), 2);
+  assert.equal(updates.length, 1); assert.deepEqual(updates[0][1].$set, { status: 'failed', failedAt: resolvedAt, failureReason: 'EMAIL_PROVIDER_AMBIGUOUS: Manually resolved without resending because Brevo acceptance could not be confirmed.', providerAcceptanceUnknown: false, sendingLeaseExpiresAt: null });
+  assert.deepEqual(activities.map(activity => activity.recipient), ['first@example.org', 'second@example.org']);
+  await assert.rejects(resolveAmbiguousBrevoBatch('campaign-1', { find: () => ({ lean: async () => [] }) }, activityModel), error => error.code === 'NO_AMBIGUOUS_BATCH');
 });
 test('Brevo campaign batches retain definite HTTP rejection handling', async () => {
   await assert.rejects(sendBrevoEmailBatch([{ to: 'recipient@example.org', subject: 'Subject', text: 'Text' }], { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, async () => ({ ok: false, status: 400, json: async () => ({ code: 'invalid_parameter' }) })), error => error.code === 'EMAIL_PROVIDER_REJECTED');
