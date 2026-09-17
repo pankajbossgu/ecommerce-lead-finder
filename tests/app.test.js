@@ -399,9 +399,10 @@ test('Brevo campaign sending submits up to 100 message versions in one request',
   const result = await sendBrevoEmailBatch(messages, { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example', emailName: 'SmartLocator' }, request);
   assert.equal(calls.length, 1); assert.equal(calls[0][0], 'https://api.brevo.com/v3/smtp/email');
   const payload = JSON.parse(calls[0][1].body);
-  assert.deepEqual(payload.sender, { name: 'SmartLocator', email: 'from@verified.example' }); assert.equal(payload.messageVersions.length, 100);
+  assert.deepEqual(payload.sender, { name: 'SmartLocator', email: 'from@verified.example' }); assert.equal(payload.subject, 'Subject 0'); assert.equal(payload.textContent, 'Text 0'); assert.equal(payload.messageVersions.length, 100);
   assert.deepEqual(payload.messageVersions[0], { to: [{ email: 'recipient-0@example.org' }], subject: 'Subject 0', textContent: 'Text 0', replyTo: { email: 'replies@example.org' } });
-  assert.equal(Object.hasOwn(payload.messageVersions[0], 'headers'), false);
+  assert.deepEqual(payload.messageVersions[99], { to: [{ email: 'recipient-99@example.org' }], subject: 'Subject 99', textContent: 'Text 99', replyTo: { email: 'replies@example.org' } });
+  assert.equal(payload.messageVersions.every(version => !Object.hasOwn(version, 'headers')), true);
   assert.deepEqual(result, messageIds.map(id => ({ ok: true, id })));
   for (const size of [1, 10, 100, 100, 50]) await sendBrevoEmailBatch(messages.slice(0, size), { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, request);
   assert.deepEqual(calls.map(([_url, options]) => JSON.parse(options.body).messageVersions.length), [100, 1, 10, 100, 100, 50]);
@@ -423,8 +424,8 @@ test('ambiguous Brevo batches can be manually resolved without a resend', async 
   assert.deepEqual(activities.map(activity => activity.recipient), ['first@example.org', 'second@example.org']);
   await assert.rejects(resolveAmbiguousBrevoBatch('campaign-1', { find: () => ({ lean: async () => [] }) }, activityModel), error => error.code === 'NO_AMBIGUOUS_BATCH');
 });
-test('Brevo campaign batches retain definite HTTP rejection handling', async () => {
-  await assert.rejects(sendBrevoEmailBatch([{ to: 'recipient@example.org', subject: 'Subject', text: 'Text' }], { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, async () => ({ ok: false, status: 400, json: async () => ({ code: 'invalid_parameter' }) })), error => error.code === 'EMAIL_PROVIDER_REJECTED');
+test('Brevo campaign batches retain the provider reason for definite HTTP rejection', async () => {
+  await assert.rejects(sendBrevoEmailBatch([{ to: 'recipient@example.org', subject: 'Subject', text: 'Text' }], { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, async () => ({ ok: false, status: 400, json: async () => ({ code: 'invalid_parameter', message: 'example reason' }) })), error => error.code === 'EMAIL_PROVIDER_REJECTED' && error.message === 'The email provider rejected this message. Brevo: invalid_parameter: example reason');
 });
 test('outreach regression contracts include recipient failures, activity history, and structured send summaries', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
