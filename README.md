@@ -105,30 +105,25 @@ api/index.js            Vercel Express entry
 
 `Lead` is a standalone entity suitable for a future campaign reference (`leadId`). Campaigns, email/WhatsApp/SMS sending, sequences, analytics, and automated outreach are deliberately excluded from Phase 1.
 
-## Email campaign delivery (Resend)
+## Email delivery and unified Mailbox
 
-Email campaigns require both server-only variables below. `EMAIL_FROM` must use a sender address/domain that is verified in the Resend account associated with `RESEND_API_KEY`; a syntactically valid address alone is not enough for provider acceptance.
-
-| Variable | Required for email campaigns | Purpose |
-| --- | --- | --- |
-| `RESEND_API_KEY` | Yes | Server-only Resend API key. |
-| `EMAIL_FROM` | Yes | Verified Resend sender, such as `LeadScout <outreach@your-verified-domain.com>`. |
-
-For local development, put them in the ignored `.env` file. For Vercel, add both under **Project → Settings → Environment Variables** for every deployed environment (Preview and Production as appropriate), then redeploy. Never put real keys in `.env.example`, browser code, logs, or support screenshots.
-
-If a batch fails, open the campaign detail: each affected recipient shows a safe failure reason and the campaign remains visibly failed or partially delivered rather than silently completing. Check that the sender domain is verified, the recipient address is valid, and the Resend account/quota permits the request. Transient provider/rate-limit failures can be retried from the campaign detail; the persisted recipient idempotency key prevents a retry from intentionally duplicating an already accepted recipient.
-
-## Mailbox and Resend Receiving
-
-Mailbox is independent from campaign history: it stores incoming messages in `ReceivedEmail` and every direct **and successful campaign** send in `SentMailboxEmail`. Campaign recipient and `OutreachActivity` history remain intact, including if a campaign or a mailbox conversation is deleted.
+Campaign and direct Mailbox email can use either configured server-side provider. The application constructs the sender from `EMAIL_NAME` and the provider-specific address; do not put a formatted `Name <email>` value in either provider address variable.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `RESEND_API_KEY` | Yes | Server-only key used for direct Mailbox sending and receiving retrieval. |
-| `RESEND_WEBHOOK_SECRET` | Yes for inbound webhooks | Server-only signing secret from the Resend webhook configuration. |
-| `EMAIL_FROM` | Yes for sending | A verified Resend sender, such as `LeadScout <mail@your-domain.com>`. |
-| `EMAIL_REPLY_TO` | No | Reply-To address used only for direct Mailbox sends. |
+| `EMAIL_NAME` | Yes | Sender display name, for example `SmartLocator`. |
+| `RESEND_API_KEY` | For Resend sending and receiving retrieval | Server-only Resend API key. |
+| `RESEND_EMAIL_FROM` | For Resend sending | Verified Resend sender email, for example `outreach@notifications.smartlocator.online`. |
+| `BREVO_API_KEY` | For Brevo sending | Server-only Brevo API key. |
+| `BREVO_EMAIL_FROM` | For Brevo sending | Verified Brevo sender email, for example `mail@smartlocator.online`. |
+| `RESEND_WEBHOOK_SECRET` | For inbound webhooks | Server-only signing secret from the existing Resend webhook configuration. |
+| `EMAIL_REPLY_TO` | Recommended | The existing Resend-receiving address used as Reply-To for both providers, so replies enter the unified Mailbox. |
+| `EMAIL_FROM` | Migration fallback only | Legacy Resend sender used only when `RESEND_EMAIL_FROM` is unset. |
 
-In Resend, configure a receiving-enabled domain and its DNS records according to Resend's current receiving-domain instructions. Then create a webhook for `email.received` pointing to `https://your-deployment/api/webhooks/resend`, copy its signing secret into `RESEND_WEBHOOK_SECRET`, and redeploy. The endpoint intentionally accepts no browser authentication: it verifies the raw Svix signature (`svix-id`, `svix-timestamp`, and `svix-signature`) before retrieving content through Resend Receiving. Do not expose any of these values in browser code.
+For Vercel, add the server-only variables under **Project → Settings → Environment Variables** for every deployed environment (Preview and Production as appropriate), then redeploy. Never put provider API keys, webhook secrets, or any of these values in browser code, logs, or support screenshots.
+
+The existing Resend `email.received` webhook remains the sole inbound path: configure its receiving-enabled domain and DNS records in Resend, keep the webhook pointed at `https://your-deployment/api/webhooks/resend`, and retain `RESEND_WEBHOOK_SECRET`. Do not create a Brevo inbound webhook or change DNS/MX records for this application change. Brevo messages use `EMAIL_REPLY_TO` so recipient replies can continue through the established Resend receiving flow.
+
+Every provider-accepted direct or campaign send is stored in the unified `SentMailboxEmail` collection with its provider, configured From address, provider message id, RFC message id, conversation id, and campaign linkage where applicable. Campaign retry and recipient idempotency remain unchanged; mailbox persistence retries never resend a provider-accepted campaign recipient.
 
 Incoming messages are retrieved through Resend Receiving only after an `email.received` webhook is verified. The webhook uses its `svix-id` for delivery idempotency and `email_id` for received-email idempotency. Incoming HTML is stored but the UI renders plain text only; attachment records retain metadata only.

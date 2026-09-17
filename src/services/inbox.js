@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { env, Lead, ReceivedEmail, SentMailboxEmail } from '../models.js';
 import { AppError, normalizeEmail } from '../utils.js';
 import { sendBrevoEmail } from './brevo.js';
+import { resolveEmailSender, validateEmailProvider } from './email.js';
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const address = value => typeof value === 'string' ? (value.match(/<([^>]+)>/)?.[1] || value).trim() : '';
@@ -36,7 +37,7 @@ async function resendRequest(path, config = env) {
   if (!response.ok) throw new AppError('Email provider is unavailable.', 502, 'EMAIL_PROVIDER_REJECTED'); return json.data || json;
 }
 export const receiveEmail = (id, config) => resendRequest(`/emails/receiving/${encodeURIComponent(id)}`, config);
-export function createRfcMessageId(from = env.emailFrom) { const domain = address(from).split('@')[1]?.toLowerCase().replace(/[^a-z0-9.-]/g, '') || 'mail.local'; return `<${crypto.randomUUID()}@${domain}>`; }
+export function createRfcMessageId(from = env.resendEmailFrom || env.emailFrom) { const domain = address(from).split('@')[1]?.toLowerCase().replace(/[^a-z0-9.-]/g, '') || 'mail.local'; return `<${crypto.randomUUID()}@${domain}>`; }
 async function threadCandidates(ids) {
   if (!ids.length) return [];
   const filter = { $or: [{ messageId: { $in: ids } }, { inReplyTo: { $in: ids } }, { references: { $in: ids } }] };
@@ -62,20 +63,21 @@ export function mailboxInput(body) {
   if (!to.length || [...to, ...cc, ...bcc].length > 25 || ![...to, ...cc, ...bcc].every(x => emailPattern.test(x))) throw new AppError('Enter one to 25 valid recipient addresses.', 400, 'VALIDATION_ERROR');
   const subject = String(body?.subject || '').trim(); const text = String(body?.text ?? body?.message ?? '').trim(); if (!subject || subject.length > 500 || !text || text.length > 20000) throw new AppError('Subject and message are required and must be within the allowed length.', 400, 'VALIDATION_ERROR'); return { to, cc, bcc, subject, text };
 }
-export async function sendMailboxEmail(input, thread = null) {
-  if (!env.resendApiKey || !env.emailFrom) throw new AppError('Mailbox sending requires RESEND_API_KEY and EMAIL_FROM.', 503, 'EMAIL_NOT_CONFIGURED');
-  const messageId = createRfcMessageId(env.emailFrom); const references = messageIds(thread?.references || []); const headers = { 'Message-ID': messageId, ...(thread?.inReplyTo ? { 'In-Reply-To': normalizedMessageId(thread.inReplyTo), References: references.join(' ') } : {}) };
-  const payload = { from: env.emailFrom, ...input, ...(env.emailReplyTo ? { replyTo: env.emailReplyTo } : {}), headers };
-  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.resendApiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); const result = await response.json().catch(() => ({}));
-  if (!response.ok || result.error) throw new AppError('The email provider rejected this message.', 502, 'EMAIL_PROVIDER_REJECTED'); const providerMessageId = result.id || result.data?.id || null;
-  return SentMailboxEmail.create({ from: env.emailFrom, ...input, replyTo: env.emailReplyTo ? [env.emailReplyTo] : [], html: '', messageId, inReplyTo: thread?.inReplyTo ? normalizedMessageId(thread.inReplyTo) : null, references, sentAt: new Date(), conversationId: thread?.conversationId || crypto.randomUUID(), attachments: [], resendEmailId: providerMessageId, providerMessageId, source: 'direct' });
-}
-export async function sendBrevoMailboxEmail(input) {
-  const sent = await sendBrevoEmail(input);
-  return SentMailboxEmail.create({ from: sent.from, ...input, replyTo: env.emailReplyTo ? [env.emailReplyTo] : [], html: '', messageId: null, inReplyTo: null, references: [], sentAt: new Date(), conversationId: crypto.randomUUID(), attachments: [], resendEmailId: null, providerMessageId: sent.id, source: 'direct' });
+export async function sendMailboxEmail(input, { provider = 'resend', thread = null } = {}) {
+  const selected = validateEmailProvider(provider); const sender = resolveEmailSender(selected); const messageId = createRfcMessageId(sender.email);
+  const references = messageIds(thread?.references || []); const headers = { 'Message-ID': messageId, ...(thread?.inReplyTo ? { 'In-Reply-To': normalizedMessageId(thread.inReplyTo), References: references.join(' ') } : {}) };
+  const payload = { ...input, ...(env.emailReplyTo ? { replyTo: env.emailReplyTo } : {}), headers };
+  let providerMessageId;
+  if (selected === 'brevo') providerMessageId = (await sendBrevoEmail(payload)).id;
+  else {
+    if (!env.resendApiKey) throw new AppError('Missing RESEND_API_KEY.', 503, 'EMAIL_NOT_CONFIGURED');
+    const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.resendApiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: sender.from, ...payload }) }); const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.error) throw new AppError('The email provider rejected this message.', 502, 'EMAIL_PROVIDER_REJECTED'); providerMessageId = result.id || result.data?.id || null;
+  }
+  return SentMailboxEmail.create({ provider: selected, from: sender.from, ...input, replyTo: env.emailReplyTo ? [env.emailReplyTo] : [], html: '', messageId, inReplyTo: thread?.inReplyTo ? normalizedMessageId(thread.inReplyTo) : null, references, sentAt: new Date(), conversationId: thread?.conversationId || crypto.randomUUID(), attachments: [], resendEmailId: selected === 'resend' ? providerMessageId : null, providerMessageId, source: 'direct' });
 }
 export async function persistCampaignMailboxEmail({ campaign, recipient, lead, subject, text, providerMessageId, messageId, sentAt }) {
-  const rfcMessageId = normalizedMessageId(messageId) || createRfcMessageId(env.emailFrom);
-  const record = { campaignId: campaign._id, campaignRecipientId: recipient._id, leadId: lead._id, source: 'campaign', from: env.emailFrom, to: [lead.email], cc: [], bcc: [], replyTo: env.emailReplyTo ? [env.emailReplyTo] : [], subject, text, html: '', headers: { 'Message-ID': rfcMessageId }, messageId: rfcMessageId, conversationId: crypto.randomUUID(), sentAt, attachments: [], resendEmailId: providerMessageId, providerMessageId };
+  const provider = validateEmailProvider(campaign.emailProvider); const sender = resolveEmailSender(provider); const rfcMessageId = normalizedMessageId(messageId) || createRfcMessageId(sender.email);
+  const record = { campaignId: campaign._id, campaignRecipientId: recipient._id, leadId: lead._id, source: 'campaign', provider, from: sender.from, to: [lead.email], cc: [], bcc: [], replyTo: env.emailReplyTo ? [env.emailReplyTo] : [], subject, text, html: '', headers: { 'Message-ID': rfcMessageId }, messageId: rfcMessageId, conversationId: crypto.randomUUID(), sentAt, attachments: [], resendEmailId: provider === 'resend' ? providerMessageId : null, providerMessageId };
   try { return await SentMailboxEmail.findOneAndUpdate({ campaignRecipientId: recipient._id }, { $setOnInsert: record }, { upsert: true, new: true }).lean(); } catch (error) { if (error?.code === 11000) return SentMailboxEmail.findOne({ campaignRecipientId: recipient._id }).lean(); throw error; }
 }

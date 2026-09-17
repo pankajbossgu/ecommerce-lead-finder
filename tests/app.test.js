@@ -363,13 +363,21 @@ test('client invalidates stale polling callbacks when cancellation completes', (
   assert.match(client, /aria-valuetext/);
 });
 
-import { emailConfiguration, normalizeBatchResponse, sendEmailBatch } from '../src/services/email.js';
+import { emailConfiguration, normalizeBatchResponse, resolveEmailSender, sendEmailBatch, validateEmailProvider } from '../src/services/email.js';
 
 test('email readiness validates missing configuration and sender format without exposing credentials', () => {
-  assert.deepEqual(emailConfiguration({ resendApiKey: '', emailFrom: '' }).missing.sort(), ['EMAIL_FROM', 'RESEND_API_KEY']);
-  assert.equal(emailConfiguration({ resendApiKey: 'secret', emailFrom: 'not-an-address' }).code, 'EMAIL_INVALID_SENDER');
-  assert.equal(emailConfiguration({ resendApiKey: 'secret', emailFrom: 'sender@verified.example' }).ready, true);
-  assert.equal(emailConfiguration({ resendApiKey: 'secret', emailFrom: 'LeadScout <sender@verified.example>' }).ready, true);
+  assert.deepEqual(emailConfiguration({ resendApiKey: '', emailFrom: '' }).missing.sort(), ['RESEND_API_KEY', 'RESEND_EMAIL_FROM']);
+  assert.equal(emailConfiguration({ resendApiKey: 'secret', resendEmailFrom: 'not-an-address' }).code, 'EMAIL_INVALID_SENDER');
+  assert.equal(emailConfiguration({ resendApiKey: 'secret', resendEmailFrom: 'sender@verified.example' }).ready, true);
+  assert.equal(emailConfiguration({ resendApiKey: 'secret', emailFrom: 'LeadScout <sender@verified.example>' }).ready, true, 'legacy EMAIL_FROM remains a Resend fallback');
+});
+
+test('provider sender resolution uses provider-specific addresses and validates the provider server-side', () => {
+  const config = { emailName: 'SmartLocator', resendEmailFrom: 'outreach@notifications.smartlocator.online', brevoEmailFrom: 'mail@smartlocator.online', emailFrom: 'legacy@example.org' };
+  assert.deepEqual(resolveEmailSender('resend', config), { provider: 'resend', name: 'SmartLocator', email: 'outreach@notifications.smartlocator.online', from: 'SmartLocator <outreach@notifications.smartlocator.online>' });
+  assert.deepEqual(resolveEmailSender('brevo', config), { provider: 'brevo', name: 'SmartLocator', email: 'mail@smartlocator.online', from: 'SmartLocator <mail@smartlocator.online>' });
+  assert.throws(() => validateEmailProvider('custom-sender'), error => error.code === 'VALIDATION_ERROR');
+  assert.equal(resolveEmailSender('resend', { emailName: 'SmartLocator', emailFrom: 'legacy@example.org' }).email, 'legacy@example.org');
 });
 test('Resend batch responses retain item-level outcomes and message ids', () => {
   assert.deepEqual(normalizeBatchResponse({ data: { data: [{ id: 'message-1' }, { error: { message: 'recipient rejected' } }] } }, 2), [{ ok: true, id: 'message-1' }, { ok: false, code: 'EMAIL_PROVIDER_REJECTED', reason: 'The email provider rejected this request.' }]);
@@ -378,9 +386,9 @@ test('Resend batch responses retain item-level outcomes and message ids', () => 
   assert.equal(partial.reason, 'The email provider rejected this request.');
 });
 test('email sending preserves batch idempotency and maps successful provider ids', async () => {
-  const calls = []; class FakeResend { constructor(key) { assert.equal(key, 'key'); } batch = { send: async (_messages, options) => { calls.push(options); return { data: { data: [{ id: 'provider-id' }] } }; } }; }
-  const result = await sendEmailBatch([{ to: 'to@example.org', subject: 'Hi', text: 'Hello' }], 'campaign:1:batch:retry-safe', { resendApiKey: 'key', emailFrom: 'from@verified.example' }, FakeResend);
-  assert.deepEqual(result, [{ ok: true, id: 'provider-id' }]); assert.equal(calls[0].idempotencyKey, 'campaign:1:batch:retry-safe');
+  const calls = []; class FakeResend { constructor(key) { assert.equal(key, 'key'); } batch = { send: async (messages, options) => { calls.push({ messages, options }); return { data: { data: [{ id: 'provider-id' }] } }; } }; }
+  const result = await sendEmailBatch([{ to: 'to@example.org', subject: 'Hi', text: 'Hello' }], 'campaign:1:batch:retry-safe', { resendApiKey: 'key', emailName: 'SmartLocator', resendEmailFrom: 'from@verified.example' }, FakeResend);
+  assert.deepEqual(result, [{ ok: true, id: 'provider-id' }]); assert.equal(calls[0].options.idempotencyKey, 'campaign:1:batch:retry-safe'); assert.equal(calls[0].messages[0].from, 'SmartLocator <from@verified.example>');
 });
 test('outreach regression contracts include recipient failures, activity history, and structured send summaries', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
@@ -492,6 +500,8 @@ test('campaign mailbox persistence is isolated and reply recipients are server c
   assert.match(app, /to: \[external\], cc: \[\], bcc: \[\], subject: `Re: \$\{originalSubject\}`/);
   assert.match(app, /inReplyTo: normalizedMessageId\(parent\.messageId\), references/);
   assert.match(inbox, /headers: \{ 'Message-ID': rfcMessageId \}/);
+  assert.match(inbox, /provider, from: sender\.from/);
+  assert.match(app, /latestSent.*provider/);
 });
 
 test('mailbox accepts inbound mail only through the webhook and exposes no manual sync path', () => {
