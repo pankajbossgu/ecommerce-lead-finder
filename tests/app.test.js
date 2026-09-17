@@ -5,6 +5,7 @@ import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, duplicateReason
 import { assertLeadStatus, isValidPublicEmail, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizeSocialProfileUrl, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 import crypto from 'node:crypto';
 import { conversationFor, createRfcMessageId, messageIds, normalizedMessageId, verifyResendWebhook } from '../src/services/inbox.js';
+import { sendBrevoEmailBatch } from '../src/services/brevo.js';
 
 test('mailbox webhook verification rejects missing and invalid signatures and accepts a fresh signed body', () => {
   const raw = Buffer.from('{"type":"email.received"}'); const secret = `whsec_${Buffer.from('mailbox-test-secret').toString('base64')}`; const timestamp = String(Math.floor(Date.now() / 1000)); const id = 'msg_test';
@@ -389,6 +390,19 @@ test('email sending preserves batch idempotency and maps successful provider ids
   const calls = []; class FakeResend { constructor(key) { assert.equal(key, 'key'); } batch = { send: async (messages, options) => { calls.push({ messages, options }); return { data: { data: [{ id: 'provider-id' }] } }; } }; }
   const result = await sendEmailBatch([{ to: 'to@example.org', subject: 'Hi', text: 'Hello' }], 'campaign:1:batch:retry-safe', { resendApiKey: 'key', emailName: 'SmartLocator', resendEmailFrom: 'from@verified.example' }, FakeResend);
   assert.deepEqual(result, [{ ok: true, id: 'provider-id' }]); assert.equal(calls[0].options.idempotencyKey, 'campaign:1:batch:retry-safe'); assert.equal(calls[0].messages[0].from, 'SmartLocator <from@verified.example>');
+});
+test('Brevo campaign sending submits up to 100 message versions in one request', async () => {
+  const calls = []; const messages = Array.from({ length: 100 }, (_value, index) => ({ to: `recipient-${index}@example.org`, subject: `Subject ${index}`, text: `Text ${index}`, headers: { 'Message-ID': `<${index}@example.org>` }, replyTo: 'replies@example.org' }));
+  const request = async (...args) => { calls.push(args); return { ok: true, json: async () => ({ messageId: 'brevo-batch-id' }) }; };
+  const result = await sendBrevoEmailBatch(messages, { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example', emailName: 'SmartLocator' }, request);
+  assert.equal(calls.length, 1); assert.equal(calls[0][0], 'https://api.brevo.com/v3/smtp/email');
+  const payload = JSON.parse(calls[0][1].body);
+  assert.deepEqual(payload.sender, { name: 'SmartLocator', email: 'from@verified.example' }); assert.equal(payload.messageVersions.length, 100);
+  assert.deepEqual(payload.messageVersions[0], { to: [{ email: 'recipient-0@example.org' }], subject: 'Subject 0', textContent: 'Text 0', replyTo: { email: 'replies@example.org' }, headers: { 'Message-ID': '<0@example.org>' } });
+  assert.deepEqual(result, Array.from({ length: 100 }, () => ({ ok: true, id: 'brevo-batch-id' })));
+  for (const size of [100, 100, 50]) await sendBrevoEmailBatch(messages.slice(0, size), { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, request);
+  assert.deepEqual(calls.map(([_url, options]) => JSON.parse(options.body).messageVersions.length), [100, 100, 100, 50]);
+  await assert.rejects(sendBrevoEmailBatch([...messages, { to: 'recipient-100@example.org', subject: 'Subject 100', text: 'Text 100' }], { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, request), error => error.code === 'EMAIL_BATCH_TOO_LARGE');
 });
 test('outreach regression contracts include recipient failures, activity history, and structured send summaries', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
