@@ -400,9 +400,17 @@ test('Brevo campaign sending submits up to 100 message versions in one request',
   assert.deepEqual(payload.sender, { name: 'SmartLocator', email: 'from@verified.example' }); assert.equal(payload.messageVersions.length, 100);
   assert.deepEqual(payload.messageVersions[0], { to: [{ email: 'recipient-0@example.org' }], subject: 'Subject 0', textContent: 'Text 0', replyTo: { email: 'replies@example.org' }, headers: { 'Message-ID': '<0@example.org>' } });
   assert.deepEqual(result, Array.from({ length: 100 }, () => ({ ok: true, id: 'brevo-batch-id' })));
-  for (const size of [100, 100, 50]) await sendBrevoEmailBatch(messages.slice(0, size), { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, request);
-  assert.deepEqual(calls.map(([_url, options]) => JSON.parse(options.body).messageVersions.length), [100, 100, 100, 50]);
+  for (const size of [1, 10, 100, 100, 50]) await sendBrevoEmailBatch(messages.slice(0, size), { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, request);
+  assert.deepEqual(calls.map(([_url, options]) => JSON.parse(options.body).messageVersions.length), [100, 1, 10, 100, 100, 50]);
+  assert.deepEqual(await sendBrevoEmailBatch([], { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, request), []);
+  assert.equal(calls.length, 6);
   await assert.rejects(sendBrevoEmailBatch([...messages, { to: 'recipient-100@example.org', subject: 'Subject 100', text: 'Text 100' }], { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, request), error => error.code === 'EMAIL_BATCH_TOO_LARGE');
+});
+test('Brevo campaign batches identify transport failures as ambiguous', async () => {
+  await assert.rejects(sendBrevoEmailBatch([{ to: 'recipient@example.org', subject: 'Subject', text: 'Text' }], { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, async () => { throw new TypeError('network timeout'); }), error => error.code === 'EMAIL_PROVIDER_AMBIGUOUS');
+});
+test('Brevo campaign batches retain definite HTTP rejection handling', async () => {
+  await assert.rejects(sendBrevoEmailBatch([{ to: 'recipient@example.org', subject: 'Subject', text: 'Text' }], { brevoApiKey: 'key', brevoEmailFrom: 'from@verified.example' }, async () => ({ ok: false, status: 400, json: async () => ({ code: 'invalid_parameter' }) })), error => error.code === 'EMAIL_PROVIDER_REJECTED');
 });
 test('outreach regression contracts include recipient failures, activity history, and structured send summaries', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
