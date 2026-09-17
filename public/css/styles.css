@@ -302,7 +302,9 @@ textarea { width:100%; min-height:90px; padding:10px 12px; border:1px solid var(
 /* Historical communication states remain legible without relying on colour alone. */
 .outreach-status.status-sent { background:#dff1e9; color:#146247; }
 .outreach-status.status-not-sent { background:#fff5d9; color:#765600; }
+.outreach-status.status-pending { background:#fff5d9; color:#765600; }
 .outreach-status.status-failed { background:#fff0ed; color:#a54036; }
+.outreach-status.status-skipped { background:#edf1ef; color:#465952; }
 .campaign-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
 @media (max-width:760px) {
   .lead-tabs { display:flex; flex-wrap:nowrap; gap:8px; padding:6px; overflow-x:auto; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; }
