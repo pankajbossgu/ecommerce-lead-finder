@@ -19,7 +19,7 @@ export async function sendBrevoEmailBatch(messages, config = env, request = fetc
   // email request and returns an id for each accepted message version.
   let response;
   try {
-    response = await request('https://api.brevo.com/v3/smtp/email', { method: 'POST', headers: { 'api-key': config.brevoApiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ sender: { name: sender.name, email: sender.email }, messageVersions: messages.map(message => ({ to: [{ email: message.to }], subject: message.subject, textContent: message.text, ...(message.replyTo ? { replyTo: { email: message.replyTo } } : {}), ...(message.headers ? { headers: message.headers } : {}) })) }) });
+    response = await request('https://api.brevo.com/v3/smtp/email', { method: 'POST', headers: { 'api-key': config.brevoApiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ sender: { name: sender.name, email: sender.email }, messageVersions: messages.map(message => ({ to: [{ email: message.to }], subject: message.subject, textContent: message.text, ...(message.replyTo ? { replyTo: { email: message.replyTo } } : {}) })) }) });
   } catch {
     // Brevo's batch endpoint has no documented idempotency key. A transport
     // error therefore cannot establish whether Brevo accepted this request.
