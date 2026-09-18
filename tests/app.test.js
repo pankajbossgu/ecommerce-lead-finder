@@ -625,6 +625,8 @@ test('mailbox bulk Not Useful derives unique current lead statuses from selected
   assert.match(app, /async function mailboxLeadAssociations\(items\)/);
   assert.match(app, /leads\?\.size === 1/);
   assert.match(app, /Lead\.find\(\{ _id: \{ \$in: leadIds \} \}\)\.select\('status'\)/);
+  assert.match(app, /req\.body\?\.confirmation !== 'NOT_USEFUL'/);
+  assert.match(app, /'CONFIRMATION_REQUIRED'/);
   assert.match(app, /status: \{ \$ne: 'discarded' \}/);
   assert.match(app, /status: 'discarded', savedAt: null, notUsefulAt: new Date\(\)/);
   assert.doesNotMatch(app.slice(app.indexOf("app.post('/api/mailbox/messages/not-useful'"), app.indexOf('const discoveryJobResponse')), /ReceivedEmail\.(?:update|delete)|SentMailboxEmail\.(?:update|delete)/);
@@ -638,6 +640,10 @@ test('mailbox Not Useful UI is selection-only, checks before confirmation, and d
   assert.match(client, /\/api\/mailbox\/messages\/not-useful\/check/);
   assert.match(client, /Unable to verify the selected leads\. No changes were made\./);
   assert.match(client, /data-retry-mailbox-not-useful/);
+  assert.match(client, /state\.mailboxNotUsefulTarget = \[\.\.\.state\.mailboxSelected\]/);
+  assert.match(client, /const ids = state\.mailboxNotUsefulTarget/);
+  assert.match(client, /JSON\.stringify\(\{ ids, confirmation: 'NOT_USEFUL' \}\)/);
+  assert.match(client, /state\.mailboxNotUsefulTarget = null/);
   assert.match(client, /Marking leads as Not Useful…/);
   assert.match(client, /data-confirm-mailbox-not-useful/);
   assert.match(client, /item\.leadNotUseful \? ' <em class="mail-not-useful">Not Useful<\/em>' : ''/);
