@@ -595,15 +595,21 @@ test('Inbox conversations expose a reply action only for active received email t
   assert.match(client, /\/api\/mailbox\/conversations\/\$\{encodeURIComponent\(sendMail\.dataset\.mailSend\)\}\/reply/);
 });
 
-test('saved lead bulk Not Useful action confirms before reusing the bulk discarded update', () => {
+test('saved lead bulk Not Useful confirmation snapshots its selection before reusing the bulk discarded update', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
   const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   assert.match(html, /id="mark-saved-not-useful"/);
   assert.match(html, /class="saved-selection-danger"/);
   assert.match(client, /function confirmMarkSavedNotUseful\(\)/);
-  assert.match(client, /You are about to mark \$\{count\} selected \$\{pluralLead\} as Not Useful\. Continue\?/);
+  assert.match(client, /savedNotUsefulSelection\(\)/);
+  assert.match(client, /state\.savedNotUsefulConfirmation = confirmation/);
+  assert.match(client, /You are about to mark \$\{confirmation\.count\} selected \$\{pluralLead\} as Not Useful\. Continue\?/);
   assert.match(client, /data-confirm-saved-not-useful/);
+  assert.match(client, /JSON\.stringify\(confirmation\.body\)/);
+  assert.match(client, /state\.savedNotUsefulConfirmation = null/);
+  assert.match(client, /'close', \(\) => \{ state\.savedNotUsefulConfirmation = null; \}/);
+  assert.match(client, /selectAllMatching: true, \.\.\.filters, excludedLeadIds, confirmation: 'NOT_USEFUL'/);
   assert.match(client, /confirmation: 'NOT_USEFUL'/);
   assert.match(client, /setButtonLoading\(button, true, 'Updating…'\)/);
   assert.match(app, /savedSelection && req\.body\?\.confirmation !== 'NOT_USEFUL'/);
