@@ -115,6 +115,9 @@ fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 .section-heading .button { flex: 0 0 auto; }
 .bulk-actions { position: sticky; top: 12px; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0 0 14px; padding: 10px 12px 10px 15px; border: 1px solid #cce2d8; border-radius: 11px; color: var(--brand-dark); background: var(--brand-pale); box-shadow: var(--shadow-sm); font-weight: 760; }
 .bulk-actions > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.saved-selection-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
+.saved-selection-danger { display: flex; align-items: center; gap: 8px; padding-left: 14px; border-left: 1px solid #b9d8ca; }
+.saved-selection-danger > span { color: var(--muted); font-size: 12px; font-weight: 700; }
 .lead-table, .history-table { width: 100%; overflow: hidden; border: 1px solid var(--line); border-collapse: separate; border-spacing: 0; border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-sm); }
 .lead-table { table-layout: fixed; }
 .lead-table th, .lead-table td, .history-table th, .history-table td { padding: 16px 14px; border-bottom: 1px solid #e6ece9; text-align: left; vertical-align: middle; }
@@ -242,6 +245,8 @@ fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
   .section-heading .button { width: 100%; }
   .bulk-actions { align-items: stretch; flex-direction: column; }
   .bulk-actions > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .saved-selection-actions { grid-template-columns: 1fr !important; }
+  .saved-selection-danger { justify-content: space-between; padding: 10px 0 0; border-top: 1px solid #b9d8ca; border-left: 0; }
   .bulk-actions .button { min-height: 42px; padding: 8px 6px; font-size: 12px; }
   .toolbar { grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; padding: 14px; }
   .toolbar-search, .toolbar a.button { grid-column: 1 / -1; }
