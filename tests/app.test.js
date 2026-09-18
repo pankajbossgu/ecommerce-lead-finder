@@ -500,6 +500,20 @@ test('saved lead management pagination is capped at 20 and preserves filtered pa
   assert.match(client, /state\.pages\.saved = 1/);
 });
 
+test('search history uses fixed 25-record pages with safe, compact navigation', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /function historyPagination\(\{ page, pages, total, limit \}\)/);
+  assert.match(client, /aria-label="Search history pagination"/);
+  assert.match(client, /Showing \$\{first\}–\$\{last\} of \$\{total\} searches/);
+  assert.match(client, /data-history-page/);
+  assert.match(client, /aria-current="page"/);
+  assert.match(client, /new URLSearchParams\(\{ page, limit: 25 \}\)/);
+  assert.match(client, /state\.pages\.history = page/);
+  assert.match(client, /page < 1 \|\| page > state\.historyPages/);
+  assert.match(client, /page > data\.pagination\.pages/);
+  assert.match(client, /request !== state\.historyRequest/);
+});
+
 test('saved lead all-matching selection survives pagination and retains the campaign request contract', () => {
   const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
   // Selecting all matching leads immediately selects the rows already rendered,
