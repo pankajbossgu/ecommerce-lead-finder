@@ -586,3 +586,27 @@ test('mailbox badge totals are independent from search-result totals', () => {
   assert.doesNotMatch(client, /mailbox-sent-count'\)\.textContent = data\.total/);
   assert.doesNotMatch(client, /mailbox-trash-count'\)\.textContent = data\.total/);
 });
+
+test('Inbox conversations expose a reply action only for active received email threads', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /latestInbound = \[\.\.\.data\.items\]\.reverse\(\)\.find\(item => item\.box === 'inbox'\)/);
+  assert.match(client, /!trash && latestInbound/);
+  assert.match(client, /data-mail-reply=.*data-mail-to=.*latestInbound\.fromEmail/);
+  assert.match(client, /\/api\/mailbox\/conversations\/\$\{encodeURIComponent\(sendMail\.dataset\.mailSend\)\}\/reply/);
+});
+
+test('saved lead bulk Not Useful action confirms before reusing the bulk discarded update', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="mark-saved-not-useful"/);
+  assert.match(html, /class="saved-selection-danger"/);
+  assert.match(client, /function confirmMarkSavedNotUseful\(\)/);
+  assert.match(client, /You are about to mark \$\{count\} selected \$\{pluralLead\} as Not Useful\. Continue\?/);
+  assert.match(client, /data-confirm-saved-not-useful/);
+  assert.match(client, /confirmation: 'NOT_USEFUL'/);
+  assert.match(client, /setButtonLoading\(button, true, 'Updating…'\)/);
+  assert.match(app, /savedSelection && req\.body\?\.confirmation !== 'NOT_USEFUL'/);
+  assert.match(app, /status: 'saved'/);
+  assert.match(app, /status: action, savedAt: null, notUsefulAt: new Date\(\)/);
+});

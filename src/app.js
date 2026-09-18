@@ -285,9 +285,19 @@ app.delete('/api/leads/:id', async (req, res) => {
 });
 app.post('/api/leads/bulk', async (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? [...new Set(req.body.ids)] : []; const action = req.body?.action;
-  if (!ids.length || ids.length > 100 || !ids.every(mongoose.isValidObjectId)) throw new AppError('Choose one to 100 valid leads', 400, 'VALIDATION_ERROR');
+  const savedSelection = action === 'discarded' && req.body?.scope === 'saved';
+  if (!savedSelection && (!ids.length || ids.length > 100 || !ids.every(mongoose.isValidObjectId))) throw new AppError('Choose one to 100 valid leads', 400, 'VALIDATION_ERROR');
   if (!['saved', 'discarded', 'delete'].includes(action)) throw new AppError('Unsupported bulk action', 400, 'VALIDATION_ERROR');
-  const filter = { _id: { $in: ids }, status: 'new' };
+  if (savedSelection && req.body?.confirmation !== 'NOT_USEFUL') throw new AppError('Confirm before marking saved leads as Not Useful.', 400, 'CONFIRMATION_REQUIRED');
+  let filter = { _id: { $in: ids }, status: 'new' };
+  if (savedSelection) {
+    const excludedIds = [...new Set(Array.isArray(req.body?.excludedLeadIds) ? req.body.excludedLeadIds : [])];
+    if (!excludedIds.every(mongoose.isValidObjectId)) throw new AppError('Selected leads are invalid', 400, 'VALIDATION_ERROR');
+    const matchingIds = req.body?.selectAllMatching === true ? (await Lead.aggregate([...managementPipeline(req.body), { $project: { _id: 1 } }])).map(lead => lead._id) : ids;
+    const selectedIds = req.body?.selectAllMatching === true ? matchingIds.filter(id => !excludedIds.some(excluded => String(id) === excluded)) : ids;
+    if (!selectedIds.length || (req.body?.selectAllMatching !== true && (!ids.length || ids.length > 100 || !ids.every(mongoose.isValidObjectId)))) throw new AppError('Choose one to 100 valid leads', 400, 'VALIDATION_ERROR');
+    filter = { _id: { $in: selectedIds }, status: 'saved' };
+  }
   let result;
   if (action === 'delete') result = await Lead.deleteMany(filter);
   else if (action === 'discarded') result = await Lead.updateMany(filter, { $set: { status: action, savedAt: null, notUsefulAt: new Date() } }, { runValidators: true });
