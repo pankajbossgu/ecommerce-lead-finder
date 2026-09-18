@@ -228,7 +228,9 @@ app.post('/api/mailbox/messages/not-useful/check', mailboxRateLimit, async (req,
   res.json(summary);
 });
 app.post('/api/mailbox/messages/not-useful', mailboxRateLimit, async (req, res) => {
-  const summary = await mailboxLeadSummary(mailboxSelectionIds(req.body));
+  const ids = mailboxSelectionIds(req.body);
+  if (req.body?.confirmation !== 'NOT_USEFUL') throw new AppError('Confirm marking leads as Not Useful before applying the change.', 400, 'CONFIRMATION_REQUIRED');
+  const summary = await mailboxLeadSummary(ids);
   // Re-read the mailbox relationships and lead statuses immediately before the
   // update. The status predicate makes a concurrent Not Useful action a no-op.
   const result = summary.leadIds.length ? await Lead.updateMany({ _id: { $in: summary.leadIds }, status: { $ne: 'discarded' } }, { $set: { status: 'discarded', savedAt: null, notUsefulAt: new Date() } }, { runValidators: true }) : { modifiedCount: 0 };
