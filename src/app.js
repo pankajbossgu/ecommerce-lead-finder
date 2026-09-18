@@ -168,17 +168,39 @@ app.use('/api', async (_req, _res, next) => {
 // unbounded mailbox result set (including when a caller supplies `limit`).
 const mailboxPage = query => ({ page: Math.max(1, Math.floor(Number(query.page) || 1)), limit: 25 });
 const mailboxSearch = query => { const term = String(query.search || '').trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); return term ? { $or: ['from', 'to', 'cc', 'bcc', 'subject', 'text'].map(field => ({ [field]: { $regex: term, $options: 'i' } })) } : {}; };
+async function mailboxLeadAssociations(items) {
+  const leadByMessageId = new Map(items.filter(item => item.leadId).map(item => [String(item._id), String(item.leadId)]));
+  const unresolvedConversationIds = [...new Set(items.filter(item => !item.leadId && item.conversationId).map(item => item.conversationId))];
+  if (unresolvedConversationIds.length) {
+    const filter = { conversationId: { $in: unresolvedConversationIds }, leadId: { $ne: null } };
+    const [received, sent] = await Promise.all([ReceivedEmail.find(filter).select('conversationId leadId').lean(), SentMailboxEmail.find(filter).select('conversationId leadId').lean()]);
+    const leadsByConversation = new Map();
+    for (const message of [...received, ...sent]) {
+      const leads = leadsByConversation.get(message.conversationId) || new Set();
+      leads.add(String(message.leadId)); leadsByConversation.set(message.conversationId, leads);
+    }
+    for (const item of items) {
+      const leads = !item.leadId && item.conversationId ? leadsByConversation.get(item.conversationId) : null;
+      if (leads?.size === 1) leadByMessageId.set(String(item._id), [...leads][0]);
+    }
+  }
+  const leadIds = [...new Set(leadByMessageId.values())];
+  const leads = leadIds.length ? await Lead.find({ _id: { $in: leadIds } }).select('status').lean() : [];
+  const existingLeadIds = new Set(leads.map(lead => String(lead._id)));
+  return { leads, associatedMessageCount: [...leadByMessageId.values()].filter(id => existingLeadIds.has(id)).length, leadIdFor: item => leadByMessageId.get(String(item._id)) || null };
+}
 async function mailboxList(Model, req, res, kind) {
   const { page, limit } = mailboxPage(req.query); const deleted = req.query.deleted === 'true'; const filter = { deletedAt: deleted ? { $ne: null } : null, ...mailboxSearch(req.query) };
   if (kind === 'inbox' && req.query.unread === 'true') filter.readAt = null; if (kind === 'inbox' && req.query.unread === 'false') filter.readAt = { $ne: null };
   const sort = kind === 'sent' ? { sentAt: -1, _id: -1 } : { receivedAt: -1, _id: -1 };
   const [items, total, unreadCount] = await Promise.all([Model.find(filter).select('-html -headers -attachments').sort(sort).skip((page - 1) * limit).limit(limit).lean(), Model.countDocuments(filter), kind === 'inbox' ? ReceivedEmail.countDocuments({ deletedAt: null, readAt: null }) : 0]);
-  res.json({ items: items.map(item => ({ ...item, snippet: String(item.text || '').replace(/\s+/g, ' ').slice(0, 180) })), total, unreadCount, pagination: pagination(page, limit, total) });
+  const associations = await mailboxLeadAssociations(items); const discardedLeadIds = new Set(associations.leads.filter(lead => lead.status === 'discarded').map(lead => String(lead._id)));
+  res.json({ items: items.map(item => ({ ...item, leadNotUseful: discardedLeadIds.has(associations.leadIdFor(item)), snippet: String(item.text || '').replace(/\s+/g, ' ').slice(0, 180) })), total, unreadCount, pagination: pagination(page, limit, total) });
 }
 app.get('/api/mailbox/inbox', (req, res) => mailboxList(ReceivedEmail, req, res, 'inbox'));
 app.get('/api/mailbox/sent', (req, res) => mailboxList(SentMailboxEmail, req, res, 'sent'));
 app.get('/api/mailbox/counts', async (_req, res) => { const [inbox, sent, trash] = await Promise.all([ReceivedEmail.countDocuments({ deletedAt: null }), SentMailboxEmail.countDocuments({ deletedAt: null }), Promise.all([ReceivedEmail.countDocuments({ deletedAt: { $ne: null } }), SentMailboxEmail.countDocuments({ deletedAt: { $ne: null } })]).then(counts => counts[0] + counts[1])]); res.json({ inbox, sent, trash }); });
-app.get('/api/mailbox/trash', async (req, res) => { const { page, limit } = mailboxPage(req.query); const match = { deletedAt: { $ne: null }, ...mailboxSearch(req.query) }; const pipeline = [{ $match: match }, { $addFields: { box: 'inbox', date: '$receivedAt' } }, { $unionWith: { coll: SentMailboxEmail.collection.name, pipeline: [{ $match: match }, { $addFields: { box: 'sent', date: '$sentAt' } }] } }, { $sort: { date: -1, _id: -1 } }, { $facet: { items: [{ $skip: (page - 1) * limit }, { $limit: limit }, { $project: { html: 0, headers: 0, attachments: 0 } }], metadata: [{ $count: 'total' }] } }]; const [result] = await ReceivedEmail.aggregate(pipeline); const total = result.metadata[0]?.total || 0; res.json({ items: result.items.map(item => ({ ...item, snippet: String(item.text || '').replace(/\s+/g, ' ').slice(0, 180) })), total, pagination: pagination(page, limit, total) }); });
+app.get('/api/mailbox/trash', async (req, res) => { const { page, limit } = mailboxPage(req.query); const match = { deletedAt: { $ne: null }, ...mailboxSearch(req.query) }; const pipeline = [{ $match: match }, { $addFields: { box: 'inbox', date: '$receivedAt' } }, { $unionWith: { coll: SentMailboxEmail.collection.name, pipeline: [{ $match: match }, { $addFields: { box: 'sent', date: '$sentAt' } }] } }, { $sort: { date: -1, _id: -1 } }, { $facet: { items: [{ $skip: (page - 1) * limit }, { $limit: limit }, { $project: { html: 0, headers: 0, attachments: 0 } }], metadata: [{ $count: 'total' }] } }]; const [result] = await ReceivedEmail.aggregate(pipeline); const total = result.metadata[0]?.total || 0; const associations = await mailboxLeadAssociations(result.items); const discardedLeadIds = new Set(associations.leads.filter(lead => lead.status === 'discarded').map(lead => String(lead._id))); res.json({ items: result.items.map(item => ({ ...item, leadNotUseful: discardedLeadIds.has(associations.leadIdFor(item)), snippet: String(item.text || '').replace(/\s+/g, ' ').slice(0, 180) })), total, pagination: pagination(page, limit, total) }); });
 app.get('/api/mailbox/conversations/:id', async (req, res) => { const trash = req.query.trash === 'true'; const deletedAt = trash ? { $ne: null } : null; const [received, sent] = await Promise.all([ReceivedEmail.find({ conversationId: req.params.id, deletedAt }).lean(), SentMailboxEmail.find({ conversationId: req.params.id, deletedAt }).lean()]); if (!received.length && !sent.length) throw new AppError('Conversation not found', 404, 'NOT_FOUND'); if (!trash) await ReceivedEmail.updateMany({ conversationId: req.params.id, deletedAt: null, readAt: null }, { $set: { readAt: new Date() } }); res.json({ items: [...received.map(x => ({ ...x, box: 'inbox', date: x.receivedAt })), ...sent.map(x => ({ ...x, box: 'sent', date: x.sentAt }))].sort((a, b) => a.date - b.date) }); });
 app.post('/api/mailbox/send', mailboxRateLimit, async (req, res) => { const input = mailboxInput(req.body); const provider = emailProvider(req.body?.emailProvider); res.status(201).json(await sendMailboxEmail(input, { provider })); });
 app.post('/api/mailbox/conversations/:id/reply', mailboxRateLimit, async (req, res) => { const [received, sent] = await Promise.all([ReceivedEmail.find({ conversationId: req.params.id, deletedAt: null }).lean(), SentMailboxEmail.find({ conversationId: req.params.id, deletedAt: null }).lean()]); const messages = [...received, ...sent].sort((a, b) => new Date(a.receivedAt || a.sentAt) - new Date(b.receivedAt || b.sentAt)); if (!messages.length) throw new AppError('Conversation not found', 404, 'NOT_FOUND'); const ours = new Set([env.resendEmailFrom, env.emailFrom, env.brevoEmailFrom, env.emailReplyTo].map(value => normalizeEmail(value?.match(/<([^>]+)>/)?.[1] || value)).filter(Boolean)); const inbound = [...received].sort((a, b) => new Date(b.receivedAt) - new Date(a.receivedAt)).find(item => !ours.has(normalizeEmail(item.fromEmail))); const external = normalizeEmail(inbound?.fromEmail || sent.flatMap(item => item.to || []).map(normalizeEmail).find(email => !ours.has(email))); if (!external) throw new AppError('No external reply recipient is available.', 409, 'REPLY_RECIPIENT_UNAVAILABLE'); const parent = [...messages].reverse().find(item => normalizedMessageId(item.messageId)); if (!parent) throw new AppError('This conversation has no RFC Message-ID to reply to.', 409, 'REPLY_THREAD_UNAVAILABLE'); const originalSubject = String(parent.subject || '').replace(/^(\s*re\s*:\s*)+/i, '').trim(); const input = mailboxInput({ text: req.body?.text ?? req.body?.message, to: [external], cc: [], bcc: [], subject: `Re: ${originalSubject}` }); const references = messageIds(messages.flatMap(item => [...(item.references || []), item.messageId])); const latestSent = [...sent].sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt))[0]; const provider = emailProvider(latestSent?.provider); res.status(201).json(await sendMailboxEmail(input, { provider, thread: { conversationId: req.params.id, inReplyTo: normalizedMessageId(parent.messageId), references } })); });
@@ -188,6 +210,30 @@ app.post('/api/mailbox/messages/delete', mailboxRateLimit, async (req, res) => {
 app.post('/api/mailbox/messages/restore', mailboxRateLimit, async (req, res) => { const ids = [...new Set(Array.isArray(req.body?.ids) ? req.body.ids : [])]; if (!ids.length || ids.length > 25 || ids.some(id => !mongoose.isValidObjectId(id))) throw new AppError('Select one to 25 Trash messages on the current page.', 400, 'VALIDATION_ERROR'); const filter = { _id: { $in: ids }, deletedAt: { $ne: null } }; const [received, sent] = await Promise.all([ReceivedEmail.updateMany(filter, { $set: { deletedAt: null } }), SentMailboxEmail.updateMany(filter, { $set: { deletedAt: null } })]); res.json({ restored: (received.modifiedCount || 0) + (sent.modifiedCount || 0) }); });
 app.post('/api/mailbox/messages/permanent-delete', mailboxRateLimit, async (req, res) => { const ids = [...new Set(Array.isArray(req.body?.ids) ? req.body.ids : [])]; if (req.body?.confirmation !== 'DELETE') throw new AppError('Confirm permanent deletion before removing Trash messages.', 400, 'CONFIRMATION_REQUIRED'); if (!ids.length || ids.length > 25 || ids.some(id => !mongoose.isValidObjectId(id))) throw new AppError('Select one to 25 Trash messages on the current page.', 400, 'VALIDATION_ERROR'); const filter = { _id: { $in: ids }, deletedAt: { $ne: null } }; const [received, sent] = await Promise.all([ReceivedEmail.deleteMany(filter), SentMailboxEmail.deleteMany(filter)]); res.json({ deleted: (received.deletedCount || 0) + (sent.deletedCount || 0) }); });
 app.delete('/api/mailbox/conversations/:id', mailboxRateLimit, async (req, res) => { if (req.body?.confirmation !== 'DELETE') throw new AppError('Type DELETE to permanently remove this conversation.', 400, 'CONFIRMATION_REQUIRED'); await Promise.all([ReceivedEmail.deleteMany({ conversationId: req.params.id, deletedAt: { $ne: null } }), SentMailboxEmail.deleteMany({ conversationId: req.params.id, deletedAt: { $ne: null } })]); res.json({ ok: true }); });
+
+function mailboxSelectionIds(body) {
+  const ids = [...new Set(Array.isArray(body?.ids) ? body.ids : [])];
+  if (!ids.length || ids.length > 25 || !ids.every(mongoose.isValidObjectId)) throw new AppError('Select one to 25 mailbox messages on the current page.', 400, 'VALIDATION_ERROR');
+  return ids;
+}
+async function mailboxLeadSummary(ids) {
+  const filter = { _id: { $in: ids } };
+  const [received, sent] = await Promise.all([ReceivedEmail.find(filter).select('leadId conversationId').lean(), SentMailboxEmail.find(filter).select('leadId conversationId').lean()]);
+  const associations = await mailboxLeadAssociations([...received, ...sent]);
+  const discarded = associations.leads.filter(lead => lead.status === 'discarded').length;
+  return { selectedItems: ids.length, associatedLeads: associations.leads.length, eligibleLeads: associations.leads.length - discarded, discardedLeads: discarded, noAssociatedLead: ids.length - associations.associatedMessageCount, leadIds: associations.leads.map(lead => String(lead._id)) };
+}
+app.post('/api/mailbox/messages/not-useful/check', mailboxRateLimit, async (req, res) => {
+  const summary = await mailboxLeadSummary(mailboxSelectionIds(req.body));
+  res.json(summary);
+});
+app.post('/api/mailbox/messages/not-useful', mailboxRateLimit, async (req, res) => {
+  const summary = await mailboxLeadSummary(mailboxSelectionIds(req.body));
+  // Re-read the mailbox relationships and lead statuses immediately before the
+  // update. The status predicate makes a concurrent Not Useful action a no-op.
+  const result = summary.leadIds.length ? await Lead.updateMany({ _id: { $in: summary.leadIds }, status: { $ne: 'discarded' } }, { $set: { status: 'discarded', savedAt: null, notUsefulAt: new Date() } }, { runValidators: true }) : { modifiedCount: 0 };
+  res.json({ ...summary, markedLeads: result.modifiedCount || 0 });
+});
 
 const discoveryJobResponse = job => ({ jobId: String(job._id || job.id), status: job.status, mode: job.mode || 'hybrid', requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, error: job.errorMessage, checkpoint: job.checkpoint, discoveryProgress: job.discoveryProgress, createdAt: job.createdAt, completedAt: job.completedAt });
 
