@@ -616,3 +616,30 @@ test('saved lead bulk Not Useful confirmation snapshots its selection before reu
   assert.match(app, /status: 'saved'/);
   assert.match(app, /status: action, savedAt: null, notUsefulAt: new Date\(\)/);
 });
+
+test('mailbox bulk Not Useful derives unique current lead statuses from selected mailbox records', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /app\.post\('\/api\/mailbox\/messages\/not-useful\/check', mailboxRateLimit/);
+  assert.match(app, /app\.post\('\/api\/mailbox\/messages\/not-useful', mailboxRateLimit/);
+  assert.match(app, /ReceivedEmail\.find\(filter\).*SentMailboxEmail\.find\(filter\)/);
+  assert.match(app, /async function mailboxLeadAssociations\(items\)/);
+  assert.match(app, /leads\?\.size === 1/);
+  assert.match(app, /Lead\.find\(\{ _id: \{ \$in: leadIds \} \}\)\.select\('status'\)/);
+  assert.match(app, /status: \{ \$ne: 'discarded' \}/);
+  assert.match(app, /status: 'discarded', savedAt: null, notUsefulAt: new Date\(\)/);
+  assert.doesNotMatch(app.slice(app.indexOf("app.post('/api/mailbox/messages/not-useful'"), app.indexOf('const discoveryJobResponse')), /ReceivedEmail\.(?:update|delete)|SentMailboxEmail\.(?:update|delete)/);
+});
+
+test('mailbox Not Useful UI is selection-only, checks before confirmation, and displays current status badges', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/css/styles.css', import.meta.url), 'utf8');
+  assert.match(client, /id="mailbox-mark-not-useful"[\s\S]*state\.mailboxSelected\.size \? '' : 'hidden'/);
+  assert.match(client, /Checking selected leads…/);
+  assert.match(client, /\/api\/mailbox\/messages\/not-useful\/check/);
+  assert.match(client, /Unable to verify the selected leads\. No changes were made\./);
+  assert.match(client, /data-retry-mailbox-not-useful/);
+  assert.match(client, /Marking leads as Not Useful…/);
+  assert.match(client, /data-confirm-mailbox-not-useful/);
+  assert.match(client, /item\.leadNotUseful \? ' <em class="mail-not-useful">Not Useful<\/em>' : ''/);
+  assert.match(css, /\.mail-not-useful/); assert.match(css, /#fef2f2/); assert.match(css, /#b91c1c/); assert.match(css, /#fecaca/);
+});
