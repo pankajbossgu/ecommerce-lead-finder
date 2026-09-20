@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline, manualLeadInput, resolveAmbiguousBrevoBatch } from '../src/app.js';
+import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline, manualLeadInput, resolveAmbiguousBrevoBatch, skipReasonInput, skipReasons } from '../src/app.js';
 import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, duplicateReasonForLead, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizeSocialProfileUrl, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 import crypto from 'node:crypto';
@@ -465,6 +465,36 @@ test('management history pipeline derives latest independent channel statuses fr
   assert.match(source, /emailStatus/); assert.match(source, /whatsappStatus/);
   assert.match(source, /manual_sent/); assert.match(source, /failed/);
   assert.match(source, /lastContacted/);
+});
+
+test('skip reasons are allowlisted and required by the campaign skip flow', () => {
+  assert.deepEqual(skipReasons, ['whatsapp_not_registered', 'invalid_phone', 'wrong_number', 'already_contacted', 'do_not_contact', 'not_relevant', 'other']);
+  assert.equal(skipReasonInput('whatsapp_not_registered'), 'whatsapp_not_registered');
+  assert.throws(() => skipReasonInput(), error => error.code === 'VALIDATION_ERROR');
+  assert.throws(() => skipReasonInput('not-a-reason'), error => error.code === 'VALIDATION_ERROR');
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /\$set: \{ status: 'skipped', skipReason \}/);
+  assert.match(app, /status: 'skipped', skipReason/);
+});
+
+test('skipped communication derives independently from not sent and preserves other channel states', () => {
+  const pipeline = managementPipeline({ status: 'saved', communicationStatus: 'skipped' });
+  const source = JSON.stringify(pipeline);
+  assert.match(source, /emailActivity\.status/); assert.match(source, /whatsappActivity\.status/);
+  assert.match(source, /then":"skipped/); assert.match(source, /default":"not_sent/);
+  assert.match(source, /emailActivity\.status","skipped/); assert.match(source, /whatsappActivity\.status","skipped/);
+  assert.match(source, /\$or/);
+});
+
+test('skip reason schema and UI retain legacy skipped records without changing campaign eligibility', () => {
+  const models = fs.readFileSync(new URL('../src/models.js', import.meta.url), 'utf8');
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.equal((models.match(/skipReason: \{ type: String/g) || []).length, 2, 'recipient and activity history persist the optional reason');
+  assert.match(client, /Why are you skipping this lead\?/); assert.match(client, /skipReasonLabels/);
+  assert.match(client, /skipReasonLabel\(reason\) \{ return skipReasonLabels\[reason\] \|\| ''/);
+  assert.match(app, /status: \{ \$in: \['sent', 'manual_sent'\] \}/);
+  assert.doesNotMatch(app.match(/const saveBatch[\s\S]*?const docs =/)?.[0] || '', /skipped/);
 });
 
 test('template deletion uses the outreach modal confirmation instead of a native prompt', () => {
