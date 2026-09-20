@@ -506,6 +506,8 @@ test('campaign WhatsApp Copy and Open use the same personalized-message endpoint
 test('campaign detail refreshes open modal content without reopening it', () => {
   const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
   assert.match(client, /function renderCampaignDetail\(id, campaign, items\)/);
+  assert.match(client, /data-manual-sent[^>]*type="button"/);
+  assert.match(client, /data-skip-recipient[^>]*type="button"/);
   assert.match(client, /const content = renderCampaignDetail\(id, campaign, items\), modal = \$\('#outreach-modal'\); if \(modal\.open\) \$\('#outreach-modal-content'\)\.innerHTML = content; else openModal\(content\);/);
   assert.match(client, /data-manual-sent[\s\S]*return openCampaign\(manual\.dataset\.campaign\)/);
   assert.match(client, /data-skip-recipient[\s\S]*return openCampaign\(skip\.dataset\.campaign\)/);
