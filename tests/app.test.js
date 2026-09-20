@@ -489,6 +489,20 @@ test('campaign deletion and mobile status UI contracts preserve historical state
   assert.match(css, /\.lead-tabs \{ display:flex; flex-wrap:nowrap/); assert.match(css, /flex:0 0 auto/); assert.match(css, /\.lead-statuses \{ display:flex; flex-wrap:wrap; gap:6px/);
 });
 
+test('campaign WhatsApp Copy and Open use the same personalized-message endpoint', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /async function getCampaignWhatsappMessage\(campaignId, recipientId\)/);
+  assert.match(client, /\/api\/campaigns\/\$\{campaignId\}\/recipients\/\$\{recipientId\}\/whatsapp-message/);
+  assert.match(client, /navigator\.clipboard\.writeText\(await getCampaignWhatsappMessage\(copy\.dataset\.campaign, copy\.dataset\.copyWhatsapp\)\)/);
+  assert.match(client, /const whatsappMessage = await getCampaignWhatsappMessage\(button\.dataset\.campaign, button\.dataset\.openWhatsapp\)/);
+  assert.match(client, /data-open-whatsapp=.*data-campaign=.*data-phone/);
+  assert.match(client, /const url = `https:\/\/wa\.me\/\$\{whatsappPhoneNumber\(button\.dataset\.phone\)\}\?text=\$\{encodeURIComponent\(whatsappMessage\)\}`/);
+  assert.match(client, /window\.open\('about:blank', '_blank'\)/);
+  assert.match(client, /if \(openWhatsapp\) return openWhatsApp\(openWhatsapp\)/);
+  assert.match(client, /digits\.length < 7 \|\| digits\.length > 15/);
+  assert.equal((client.match(/<button class="button secondary" data-open-whatsapp/g) || []).length, 1, 'one shared action renderer serves desktop and mobile');
+});
+
 test('saved lead management pagination is capped at 20 and preserves filtered page navigation', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
