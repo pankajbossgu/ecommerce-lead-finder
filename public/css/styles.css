@@ -371,3 +371,22 @@ textarea { width:100%; min-height:90px; padding:10px 12px; border:1px solid var(
 .mailbox-trash-selection .button { margin-left:0; }.mailbox-trash-selection .button:last-child { margin-left:auto; }.mail-trash-note { margin:14px 0 0; color:var(--muted); font-size:13px; }
 .management-table .source-badge { margin-top:5px; }
 @media (max-width:760px) { .new-leads-desktop { display:none; }.new-leads-mobile { display:block; }.new-lead-card .actions { display:grid; grid-template-columns:1fr 1.35fr 1fr; }.new-lead-card .actions .button { width:100%; padding:7px 5px; font-size:12px; }.mailbox-trash-selection .button { width:auto; }.mailbox-trash-selection .button:last-child { margin-left:0; } }
+/* Campaign detail uses the available desktop space without changing the mobile card layout. */
+.outreach-modal.campaign-detail-modal { width:min(1180px, calc(100vw - 48px)); max-height:min(820px, calc(100vh - 40px)); }
+.campaign-detail-modal .modal-card { padding:clamp(28px, 4vw, 44px); }
+.campaign-detail-panel { display:grid; gap:22px; }
+.campaign-detail-panel > header { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; padding:0 42px 4px 0; }
+.campaign-detail-panel > header h2 { margin:3px 0 0; font-size:clamp(26px, 3vw, 34px); line-height:1.15; }
+.campaign-detail-panel > header .status-badge { margin:3px 0 0; }
+.campaign-detail-panel .campaign-metrics { gap:12px; }
+.campaign-detail-panel .campaign-metrics span { min-height:76px; padding:14px; }
+.campaign-detail-panel .campaign-metrics b { font-size:24px; }
+.campaign-detail-panel .campaign-progress { padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--surface-subtle); }
+.campaign-detail-panel .modal-actions { margin:0; justify-content:flex-start; }
+.campaign-detail-panel .recipient-desktop { overflow:visible; border:1px solid var(--line); border-radius:12px; }
+.campaign-detail-panel .campaign-detail { width:100%; table-layout:auto; }
+.campaign-detail-panel .campaign-detail th, .campaign-detail-panel .campaign-detail td { padding:15px 16px; vertical-align:middle; }
+.campaign-detail-panel .campaign-detail th:first-child { min-width:220px; }
+.campaign-detail-panel .campaign-detail th:last-child { min-width:280px; }
+.campaign-detail-panel .campaign-detail .actions { gap:8px; }
+@media(max-width:760px){.outreach-modal.campaign-detail-modal{width:calc(100vw - 20px);max-height:min(760px,calc(100vh - 20px))}.campaign-detail-modal .modal-card{padding:clamp(22px,4vw,34px)}.campaign-detail-panel{gap:12px}.campaign-detail-panel>header{padding-right:36px;gap:10px}.campaign-detail-panel>header h2{font-size:24px}.campaign-detail-panel .campaign-metrics{gap:8px}.campaign-detail-panel .campaign-metrics span{min-height:58px;padding:10px}.campaign-detail-panel .campaign-metrics b{font-size:20px}.campaign-detail-panel .campaign-progress{padding:0;border:0;border-radius:0;background:transparent}}

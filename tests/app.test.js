@@ -508,9 +508,13 @@ test('campaign detail refreshes open modal content without reopening it', () => 
   assert.match(client, /function renderCampaignDetail\(id, campaign, items\)/);
   assert.match(client, /data-manual-sent[^>]*type="button"/);
   assert.match(client, /data-skip-recipient[^>]*type="button"/);
-  assert.match(client, /const content = renderCampaignDetail\(id, campaign, items\), modal = \$\('#outreach-modal'\); if \(modal\.open\) \$\('#outreach-modal-content'\)\.innerHTML = content; else openModal\(content\);/);
-  assert.match(client, /data-manual-sent[\s\S]*return openCampaign\(manual\.dataset\.campaign\)/);
-  assert.match(client, /data-skip-recipient[\s\S]*return openCampaign\(skip\.dataset\.campaign\)/);
+  assert.match(client, /openCampaignId: null/);
+  assert.match(client, /async function refreshOpenCampaign\(\)/);
+  assert.match(client, /state\.openCampaignId = id/);
+  assert.match(client, /if \(state\.openCampaignId !== id\) return;/);
+  assert.match(client, /if \(state\.openCampaignId === id && !modal\.open\) modal\.showModal\(\);/);
+  assert.match(client, /data-manual-sent[\s\S]*return refreshOpenCampaign\(\)/);
+  assert.match(client, /data-skip-recipient[\s\S]*return refreshOpenCampaign\(\)/);
 });
 
 test('saved lead management pagination is capped at 20 and preserves filtered page navigation', () => {
@@ -646,7 +650,7 @@ test('saved lead bulk Not Useful confirmation snapshots its selection before reu
   assert.match(client, /data-confirm-saved-not-useful/);
   assert.match(client, /JSON\.stringify\(confirmation\.body\)/);
   assert.match(client, /state\.savedNotUsefulConfirmation = null/);
-  assert.match(client, /'close', \(\) => \{ state\.savedNotUsefulConfirmation = null; \}/);
+  assert.match(client, /'close', \(\) => \{ state\.openCampaignId = null; state\.savedNotUsefulConfirmation = null;/);
   assert.match(client, /selectAllMatching: true, \.\.\.filters, excludedLeadIds, confirmation: 'NOT_USEFUL'/);
   assert.match(client, /confirmation: 'NOT_USEFUL'/);
   assert.match(client, /setButtonLoading\(button, true, 'Updating…'\)/);
