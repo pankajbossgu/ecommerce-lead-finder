@@ -503,6 +503,14 @@ test('campaign WhatsApp Copy and Open use the same personalized-message endpoint
   assert.equal((client.match(/<button class="button secondary" data-open-whatsapp/g) || []).length, 1, 'one shared action renderer serves desktop and mobile');
 });
 
+test('campaign detail refreshes open modal content without reopening it', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /function renderCampaignDetail\(id, campaign, items\)/);
+  assert.match(client, /const content = renderCampaignDetail\(id, campaign, items\), modal = \$\('#outreach-modal'\); if \(modal\.open\) \$\('#outreach-modal-content'\)\.innerHTML = content; else openModal\(content\);/);
+  assert.match(client, /data-manual-sent[\s\S]*return openCampaign\(manual\.dataset\.campaign\)/);
+  assert.match(client, /data-skip-recipient[\s\S]*return openCampaign\(skip\.dataset\.campaign\)/);
+});
+
 test('saved lead management pagination is capped at 20 and preserves filtered page navigation', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
