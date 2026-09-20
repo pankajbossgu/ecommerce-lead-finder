@@ -383,7 +383,7 @@ textarea { width:100%; min-height:90px; padding:10px 12px; border:1px solid var(
 .campaign-detail-panel .campaign-metrics b { font-size:24px; }
 .campaign-detail-panel .campaign-progress { padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--surface-subtle); }
 .campaign-detail-panel .modal-actions { margin:0; justify-content:flex-start; }
-.campaign-detail-panel .recipient-desktop { overflow:visible; border:1px solid var(--line); border-radius:12px; }
+.campaign-detail-panel .recipient-desktop { overflow-x:auto; border:1px solid var(--line); border-radius:12px; }
 .campaign-detail-panel .campaign-detail { width:100%; table-layout:auto; }
 .campaign-detail-panel .campaign-detail th, .campaign-detail-panel .campaign-detail td { padding:15px 16px; vertical-align:middle; }
 .campaign-detail-panel .campaign-detail th:first-child { min-width:220px; }

@@ -515,6 +515,13 @@ test('campaign detail refreshes open modal content without reopening it', () => 
   assert.match(client, /if \(state\.openCampaignId === id && !modal\.open\) modal\.showModal\(\);/);
   assert.match(client, /data-manual-sent[\s\S]*return refreshOpenCampaign\(\)/);
   assert.match(client, /data-skip-recipient[\s\S]*return refreshOpenCampaign\(\)/);
+  assert.match(client, /const hasEmail = campaign\.channels\.includes\('email'\), hasWhatsApp = campaign\.channels\.includes\('whatsapp'\)/);
+  assert.match(client, /\$\{hasEmail \? '<th>Email status<\/th>' : ''\}/);
+  assert.match(client, /\$\{hasWhatsApp \? '<th>WhatsApp status<\/th>' : ''\}/);
+  assert.match(client, /hasWhatsApp && row\.whatsapp/);
+  assert.match(client, /'close', \(\) => \{ state\.openCampaignId = null;/);
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /<form method="dialog"/);
 });
 
 test('saved lead management pagination is capped at 20 and preserves filtered page navigation', () => {
