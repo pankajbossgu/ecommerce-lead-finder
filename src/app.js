@@ -324,6 +324,14 @@ const importRows = body => {
 function csvLeadInput(row) {
   return manualLeadInput({ businessName: row.business_name, website: row.website, email: row.email, phone: row.phone, category: row.category, location: [row.city, row.country].filter(Boolean).join(', '), notes: row.notes });
 }
+function csvDuplicateReason(input, seenDomains, seenEmails) {
+  const website = seenDomains.has(input.domain); const email = seenEmails.has(input.email);
+  if (website && email) return 'website and email';
+  return website ? 'website' : email ? 'email' : null;
+}
+function rememberCsvIdentity(input, seenDomains, seenEmails) {
+  seenDomains.add(input.domain); seenEmails.add(input.email);
+}
 async function matchImportedRow(row) {
   if (row.id && mongoose.isValidObjectId(row.id)) { const byId = await Lead.findById(row.id).lean(); if (byId) return byId; }
   const domain = normalizeDomain(row.website); const email = normalizeEmail(row.email); const phone = normalizePhone(row.phone);
@@ -340,15 +348,18 @@ app.post('/api/leads/csv/preview', async (req, res) => {
   const rows = importRows(req.body); const required = mode === 'new' ? ['business_name', 'website', 'email', 'country'] : ['business_name'];
   const missing = required.filter(column => !Object.hasOwn(rows[0], column));
   if (missing.length) throw new AppError(`Missing required column${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`, 400, 'CSV_INVALID');
-  const results = []; const seen = new Set();
+  const results = []; const seenDomains = new Set(); const seenEmails = new Set();
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index]; const rowNumber = index + 2;
     if (mode === 'new') {
       try {
-        const input = csvLeadInput(row); const identity = `${input.domain}|${input.email}`;
-        if (seen.has(identity)) results.push({ row: rowNumber, status: 'existing', error: 'Duplicate row in this CSV.' });
-        else if (await findLeadDuplicateReason(input)) results.push({ row: rowNumber, status: 'existing', error: 'A matching lead already exists.' });
-        else { seen.add(identity); results.push({ row: rowNumber, status: 'valid', input: row }); }
+        const input = csvLeadInput(row); const duplicate = csvDuplicateReason(input, seenDomains, seenEmails);
+        if (duplicate) results.push({ row: rowNumber, status: 'existing', error: `Duplicate row in this CSV — ${duplicate}.` });
+        else {
+          rememberCsvIdentity(input, seenDomains, seenEmails);
+          if (await findLeadDuplicateReason(input)) results.push({ row: rowNumber, status: 'existing', error: 'A matching lead already exists.' });
+          else results.push({ row: rowNumber, status: 'valid', input: row });
+        }
       } catch (error) { results.push({ row: rowNumber, status: 'invalid', error: error.message }); }
     } else {
       if (!row.business_name) { results.push({ row: rowNumber, status: 'invalid', error: 'Business name is required.' }); continue; }
@@ -362,11 +373,13 @@ app.post('/api/leads/csv/preview', async (req, res) => {
   res.json({ mode, rows: results, counts: { total: rows.length, valid: results.filter(x => x.status === 'valid').length, invalid: results.filter(x => x.status === 'invalid').length, existing: results.filter(x => x.status === 'existing').length, matched: results.filter(x => x.status === 'matched').length, alreadyNotUseful: results.filter(x => x.status === 'already_not_useful').length, notFound: results.filter(x => x.status === 'not_found').length } });
 });
 app.post('/api/leads/csv/create', async (req, res) => {
-  const rows = importRows(req.body); const counts = { created: 0, duplicate: 0, invalid: 0, failed: 0 };
+  const rows = importRows(req.body); const counts = { created: 0, duplicate: 0, invalid: 0, failed: 0 }; const seenDomains = new Set(); const seenEmails = new Set();
   for (const row of rows) {
     let input;
     try { input = csvLeadInput(row); } catch { counts.invalid += 1; continue; }
     try {
+      if (csvDuplicateReason(input, seenDomains, seenEmails)) { counts.duplicate += 1; continue; }
+      rememberCsvIdentity(input, seenDomains, seenEmails);
       if (await findLeadDuplicateReason(input)) { counts.duplicate += 1; continue; }
       await Lead.create(input); counts.created += 1;
     } catch (error) {
