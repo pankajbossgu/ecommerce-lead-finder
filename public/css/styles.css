@@ -391,3 +391,11 @@ textarea { width:100%; min-height:90px; padding:10px 12px; border:1px solid var(
 .campaign-detail-panel .campaign-detail th:last-child { min-width:280px; }
 .campaign-detail-panel .campaign-detail .actions { gap:8px; }
 @media(max-width:760px){.outreach-modal.campaign-detail-modal{width:calc(100vw - 20px);max-height:min(760px,calc(100vh - 20px))}.campaign-detail-modal .modal-card{padding:clamp(22px,4vw,34px)}.campaign-detail-panel{gap:12px}.campaign-detail-panel>header{padding-right:36px;gap:10px}.campaign-detail-panel>header h2{font-size:24px}.campaign-detail-panel .campaign-metrics{gap:8px}.campaign-detail-panel .campaign-metrics span{min-height:58px;padding:10px}.campaign-detail-panel .campaign-metrics b{font-size:20px}.campaign-detail-panel .campaign-progress{padding:0;border:0;border-radius:0;background:transparent}}
+/* CSV import keeps the existing modal language, with a compact touch-friendly workflow. */
+.lead-heading-actions,.csv-mode,.csv-counts { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.csv-upload { margin:18px 0; border:2px dashed #a8cbbd; border-radius:12px; background:var(--surface-subtle); }
+.csv-upload label { display:grid; min-height:132px; place-content:center; gap:8px; padding:18px; text-align:center; cursor:pointer; }
+.csv-upload input { max-width:100%; }
+.csv-help,.csv-file-name,.csv-issues { font-size:13px; color:var(--muted); overflow-wrap:anywhere; }
+.csv-counts { margin:14px 0; }.csv-counts span { display:grid; gap:2px; min-width:88px; padding:9px; border-radius:8px; background:var(--brand-pale); color:var(--brand-dark); font-size:12px; }.csv-counts b { font-size:18px; }.csv-issues { max-height:160px; overflow:auto; padding-left:20px; }
+@media (max-width:760px) { .lead-heading-actions { width:100%; }.lead-heading-actions .button { flex:1; min-height:44px; }.csv-mode { display:grid; grid-template-columns:1fr; }.csv-mode .button,.csv-upload label { min-height:52px; }.csv-counts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }.csv-counts span { min-width:0; }.csv-upload label { min-height:120px; } }
