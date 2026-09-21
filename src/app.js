@@ -333,14 +333,26 @@ function rememberCsvIdentity(input, seenDomains, seenEmails) {
   seenDomains.add(input.domain); seenEmails.add(input.email);
 }
 async function matchImportedRow(row) {
-  if (row.id && mongoose.isValidObjectId(row.id)) { const byId = await Lead.findById(row.id).lean(); if (byId) return byId; }
-  const domain = normalizeDomain(row.website); const email = normalizeEmail(row.email); const phone = normalizePhone(row.phone);
-  const candidates = await Lead.find({ $or: [ ...(domain ? [{ domain }] : []), ...(email ? [{ emailNormalized: email }, { email }] : []), ...(phone ? [{ phone }] : []) ] }).lean();
-  if (candidates.length) return candidates.find(lead => domain && lead.domain === domain) || candidates[0];
-  const name = normalizeBusinessName(row.business_name);
-  if (!name) return null;
-  const byName = await Lead.find({ businessName: { $regex: `^${row.business_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } }).lean();
-  return byName.find(lead => normalizeBusinessName(lead.businessName) === name) || null;
+  const normalizedLead = lead => ({ _id: String(lead._id), businessName: lead.businessName, domain: lead.domain });
+  let candidates = [];
+  if (row.id && mongoose.isValidObjectId(row.id)) candidates = await Lead.find({ _id: row.id }).lean();
+  if (!candidates.length) {
+    const domain = normalizeDomain(row.website); const email = normalizeEmail(row.email); const phone = normalizePhone(row.phone);
+    const identifiers = [ ...(domain ? [{ domain }] : []), ...(email ? [{ emailNormalized: email }, { email }] : []), ...(phone ? [{ phone }] : []) ];
+    if (identifiers.length) candidates = await Lead.find({ $or: identifiers }).lean();
+    // Keep every identifier match: a domain match must not conceal a
+    // separately matched Not Useful record (or the inverse).
+  }
+  if (!candidates.length) {
+    const name = normalizeBusinessName(row.business_name);
+    if (!name) return { saved: [], discarded: [] };
+    const byName = await Lead.find({ businessName: { $regex: `^${row.business_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } }).lean();
+    candidates = byName.filter(lead => normalizeBusinessName(lead.businessName) === name);
+  }
+  return {
+    saved: candidates.filter(lead => lead.status === 'saved').map(normalizedLead),
+    discarded: candidates.filter(lead => lead.status === 'discarded').map(normalizedLead)
+  };
 }
 app.post('/api/leads/csv/preview', async (req, res) => {
   const mode = req.body?.mode;
@@ -363,14 +375,14 @@ app.post('/api/leads/csv/preview', async (req, res) => {
       } catch (error) { results.push({ row: rowNumber, status: 'invalid', error: error.message }); }
     } else {
       if (!row.business_name) { results.push({ row: rowNumber, status: 'invalid', error: 'Business name is required.' }); continue; }
-      const lead = await matchImportedRow(row);
-      if (!lead) results.push({ row: rowNumber, status: 'not_found' });
-      else if (lead.status === 'discarded') results.push({ row: rowNumber, status: 'already_not_useful', lead: { _id: String(lead._id), businessName: lead.businessName, domain: lead.domain } });
-      else if (lead.status === 'saved') results.push({ row: rowNumber, status: 'matched', lead: { _id: String(lead._id), businessName: lead.businessName, domain: lead.domain } });
-      else results.push({ row: rowNumber, status: 'not_found', error: 'Lead is not available in Saved leads.' });
+      const matches = await matchImportedRow(row);
+      if (matches.saved.length && matches.discarded.length) results.push({ row: rowNumber, status: 'found_in_both', savedLeads: matches.saved, notUsefulLeads: matches.discarded });
+      else if (matches.saved.length) results.push({ row: rowNumber, status: 'found_in_lead_management', savedLeads: matches.saved });
+      else if (matches.discarded.length) results.push({ row: rowNumber, status: 'found_in_not_useful', notUsefulLeads: matches.discarded });
+      else results.push({ row: rowNumber, status: 'not_found' });
     }
   }
-  res.json({ mode, rows: results, counts: { total: rows.length, valid: results.filter(x => x.status === 'valid').length, invalid: results.filter(x => x.status === 'invalid').length, existing: results.filter(x => x.status === 'existing').length, matched: results.filter(x => x.status === 'matched').length, alreadyNotUseful: results.filter(x => x.status === 'already_not_useful').length, notFound: results.filter(x => x.status === 'not_found').length } });
+  res.json({ mode, rows: results, counts: { total: rows.length, valid: results.filter(x => x.status === 'valid').length, invalid: results.filter(x => x.status === 'invalid').length, existing: results.filter(x => x.status === 'existing').length, matched: results.filter(x => x.status === 'matched').length, alreadyNotUseful: results.filter(x => x.status === 'already_not_useful').length, foundInLeadManagement: results.filter(x => x.status === 'found_in_lead_management').length, foundInNotUseful: results.filter(x => x.status === 'found_in_not_useful').length, foundInBoth: results.filter(x => x.status === 'found_in_both').length, notFound: results.filter(x => x.status === 'not_found').length } });
 });
 app.post('/api/leads/csv/create', async (req, res) => {
   const rows = importRows(req.body); const counts = { created: 0, duplicate: 0, invalid: 0, failed: 0 }; const seenDomains = new Set(); const seenEmails = new Set();
