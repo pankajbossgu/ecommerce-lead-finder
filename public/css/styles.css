@@ -348,7 +348,15 @@ textarea { width:100%; min-height:90px; padding:10px 12px; border:1px solid var(
 .pagination-actions,.page-numbers { display:flex; align-items:center; gap:6px; }
 .page-numbers .button { min-width:38px; padding-inline:10px; }
 .page-numbers .button.active { color:var(--surface); background:var(--brand); border-color:var(--brand); }
+.discarded-mobile { display:none; }
+.discarded-table { table-layout:auto; }
+.discarded-table th:nth-child(1), .discarded-table td:nth-child(1) { width:30%; }
+.discarded-table th:nth-child(2), .discarded-table td:nth-child(2) { width:25%; }
+.discarded-table th:nth-child(3), .discarded-table td:nth-child(3) { width:27%; }
+.discarded-table th:nth-child(4), .discarded-table td:nth-child(4) { width:18%; }
+.discarded-table td { overflow-wrap:anywhere; }
 @media (max-width:760px) { .lead-pagination { align-items:stretch; flex-direction:column; } .pagination-actions { justify-content:space-between; } .page-numbers { overflow-x:auto; padding-bottom:2px; } .pagination-actions > .button { min-height:40px; } }
+@media (max-width:760px) { .discarded-desktop { display:none; } .discarded-mobile { display:block; } .discarded-card-list { display:grid; gap:9px; } .discarded-card { padding:12px; border:1px solid var(--line); border-radius:11px; background:var(--surface); box-shadow:var(--shadow-sm); } .discarded-card > b { display:block; color:#142b24; overflow-wrap:anywhere; } .discarded-card dl { display:grid; gap:9px; margin:11px 0 0; } .discarded-card dl div { display:grid; gap:3px; } .discarded-card dt { color:var(--muted); font-size:10px; font-weight:800; letter-spacing:.07em; text-transform:uppercase; } .discarded-card dd { margin:0; overflow-wrap:anywhere; } }
 /* Discovery channel selector and persisted channel progress. */
 .discovery-source { margin: 18px 0 0; padding: 0; border: 0; }
 .discovery-source legend { margin-bottom: 9px; font-size: 13px; font-weight: 800; color: var(--ink); }
