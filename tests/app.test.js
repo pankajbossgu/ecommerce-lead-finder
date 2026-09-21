@@ -575,15 +575,19 @@ test('campaign detail refreshes open modal content without reopening it', () => 
   assert.doesNotMatch(html, /<form method="dialog"/);
 });
 
-test('saved lead management pagination is capped at 20 and preserves filtered page navigation', () => {
+test('lead libraries preserve their page sizes and filtered page navigation', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
   assert.match(app, /const managementLimit = Math\.min\(limit, 20\)/);
   assert.match(app, /\$skip: \(page - 1\) \* managementLimit/);
-  assert.match(client, /limit: 20/);
+  assert.match(client, /view === 'discarded' \? 25 : 20/);
   assert.match(client, /Showing \$\{first\}–\$\{last\} of \$\{total\}/);
   assert.match(client, /data-lead-page/);
   assert.match(client, /state\.pages\.saved = 1/);
+  assert.match(client, /<th>Business<\/th><th>Website<\/th><th>Email<\/th><th>Not Useful date<\/th>/);
+  assert.match(client, /discarded-mobile/);
+  assert.match(client, /data-discarded-page/);
+  assert.match(client, /state\.pages\.discarded = page/);
 });
 
 test('search history uses fixed 25-record pages with safe, compact navigation', () => {
