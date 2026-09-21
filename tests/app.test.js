@@ -294,6 +294,15 @@ test('CSV import supports mode-specific templates and a 500-lead workflow', () =
   assert.match(app, /ids\.length > 500/); assert.match(client, /result\.created} created.*result\.duplicate} duplicate.*result\.invalid} invalid.*result\.failed} failed/);
 });
 
+test('Existing Leads CSV replaces Lead Management selection with saved matches only', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /function csvMatchedSavedLeadIds\(preview\)/);
+  assert.match(client, /\['found_in_lead_management', 'found_in_both'\]\.includes\(row\.status\)/);
+  assert.match(client, /function replaceSavedLeadSelection\(ids\) \{\s+state\.savedSelected\.clear\(\);\s+state\.savedExcluded\.clear\(\);\s+state\.savedSelectAll = false;\s+ids\.forEach\(id => state\.savedSelected\.add\(id\)\);/);
+  assert.match(client, /const ids = csvMatchedSavedLeadIds\(state\.csvImport\.preview\); state\.csvImport\.selected = new Set\(ids\)/);
+  assert.match(client, /replaceSavedLeadSelection\(ids\);.*await loadLeads\('saved'\);/);
+});
+
 test('regression contracts: timestamps, filtered CSV and guarded permanent deletion exist server-side', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const models = fs.readFileSync(new URL('../src/models.js', import.meta.url), 'utf8');
