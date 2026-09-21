@@ -284,6 +284,16 @@ test('date filters use inclusive UTC calendar days and reject inverted ranges', 
   assert.throws(() => parseDateRange({ from: '2026-02-01', to: '2026-01-31' }, 'savedAt'), /greater than or equal/);
 });
 
+test('CSV import supports mode-specific templates and a 500-lead workflow', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(client, /smartlocator-new-leads-template\.csv/); assert.match(client, /business_name,website,email,country/);
+  assert.match(client, /smartlocator-existing-leads-template\.csv/); assert.match(client, /business_name,website,id/);
+  assert.match(client, /Maximum 500 leads can be processed at once\./); assert.match(app, /Maximum 500 leads can be processed at once\./);
+  assert.match(app, /already_not_useful/); assert.match(client, /Already Not Useful/);
+  assert.match(app, /ids\.length > 500/); assert.match(client, /result\.created} created.*result\.duplicate} duplicate.*result\.invalid} invalid.*result\.failed} failed/);
+});
+
 test('regression contracts: timestamps, filtered CSV and guarded permanent deletion exist server-side', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const models = fs.readFileSync(new URL('../src/models.js', import.meta.url), 'utf8');

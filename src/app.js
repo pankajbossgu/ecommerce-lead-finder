@@ -314,7 +314,8 @@ app.post('/api/leads/manual', async (req, res) => {
 // and sends imports through the same manual creation/duplicate path.
 const csvColumns = new Set(['id', 'business_name', 'website', 'email', 'country', 'phone', 'social_url', 'category', 'city', 'notes']);
 const importRows = body => {
-  if (!Array.isArray(body?.rows) || !body.rows.length || body.rows.length > 500) throw new AppError('CSV must contain between 1 and 500 rows', 400, 'CSV_INVALID');
+  if (!Array.isArray(body?.rows) || !body.rows.length) throw new AppError('CSV must contain at least one lead row', 400, 'CSV_INVALID');
+  if (body.rows.length > 500) throw new AppError('Maximum 500 leads can be processed at once.', 400, 'CSV_INVALID');
   if (!body.rows.every(row => row && typeof row === 'object' && !Array.isArray(row))) throw new AppError('CSV structure is invalid', 400, 'CSV_INVALID');
   const columns = Object.keys(body.rows[0]);
   if (columns.some(column => !csvColumns.has(column))) throw new AppError(`Unexpected column: ${columns.find(column => !csvColumns.has(column))}`, 400, 'CSV_INVALID');
@@ -351,17 +352,29 @@ app.post('/api/leads/csv/preview', async (req, res) => {
       } catch (error) { results.push({ row: rowNumber, status: 'invalid', error: error.message }); }
     } else {
       if (!row.business_name) { results.push({ row: rowNumber, status: 'invalid', error: 'Business name is required.' }); continue; }
-      const lead = await matchImportedRow(row); results.push(lead ? { row: rowNumber, status: 'matched', lead: { _id: String(lead._id), businessName: lead.businessName, domain: lead.domain } } : { row: rowNumber, status: 'not_found' });
+      const lead = await matchImportedRow(row);
+      if (!lead) results.push({ row: rowNumber, status: 'not_found' });
+      else if (lead.status === 'discarded') results.push({ row: rowNumber, status: 'already_not_useful', lead: { _id: String(lead._id), businessName: lead.businessName, domain: lead.domain } });
+      else if (lead.status === 'saved') results.push({ row: rowNumber, status: 'matched', lead: { _id: String(lead._id), businessName: lead.businessName, domain: lead.domain } });
+      else results.push({ row: rowNumber, status: 'not_found', error: 'Lead is not available in Saved leads.' });
     }
   }
-  res.json({ mode, rows: results, counts: { total: rows.length, valid: results.filter(x => x.status === 'valid').length, invalid: results.filter(x => x.status === 'invalid').length, existing: results.filter(x => x.status === 'existing').length, matched: results.filter(x => x.status === 'matched').length, notFound: results.filter(x => x.status === 'not_found').length } });
+  res.json({ mode, rows: results, counts: { total: rows.length, valid: results.filter(x => x.status === 'valid').length, invalid: results.filter(x => x.status === 'invalid').length, existing: results.filter(x => x.status === 'existing').length, matched: results.filter(x => x.status === 'matched').length, alreadyNotUseful: results.filter(x => x.status === 'already_not_useful').length, notFound: results.filter(x => x.status === 'not_found').length } });
 });
 app.post('/api/leads/csv/create', async (req, res) => {
-  const rows = importRows(req.body); const preview = await Promise.all(rows.map(async (row, index) => { try { const input = csvLeadInput(row); return { row, index, input, duplicate: await findLeadDuplicateReason(input) }; } catch (error) { return { index, error }; } }));
-  if (preview.some(item => item.error)) throw new AppError('CSV has invalid rows. Review the preview before importing.', 400, 'CSV_INVALID');
-  const unique = new Set(); const actionable = [];
-  for (const item of preview) { const key = `${item.input.domain}|${item.input.email}`; if (!item.duplicate && !unique.has(key)) { unique.add(key); actionable.push(item); } }
-  try { const created = actionable.length ? await Lead.insertMany(actionable.map(item => item.input), { ordered: true }) : []; res.json({ created: created.length, existing: rows.length - created.length }); } catch (error) { if (error?.code === 11000) throw new AppError('A matching lead was created while this import was being confirmed. Please preview again.', 409, 'DUPLICATE_LEAD'); throw error; }
+  const rows = importRows(req.body); const counts = { created: 0, duplicate: 0, invalid: 0, failed: 0 };
+  for (const row of rows) {
+    let input;
+    try { input = csvLeadInput(row); } catch { counts.invalid += 1; continue; }
+    try {
+      if (await findLeadDuplicateReason(input)) { counts.duplicate += 1; continue; }
+      await Lead.create(input); counts.created += 1;
+    } catch (error) {
+      if (error?.code === 11000) counts.duplicate += 1;
+      else counts.failed += 1;
+    }
+  }
+  res.json(counts);
 });
 app.get('/api/leads/:id', async (req, res) => {
   objectId(req.params.id, 'Lead');
@@ -397,7 +410,7 @@ app.post('/api/leads/bulk', async (req, res) => {
     if (!excludedIds.every(mongoose.isValidObjectId)) throw new AppError('Selected leads are invalid', 400, 'VALIDATION_ERROR');
     const matchingIds = req.body?.selectAllMatching === true ? (await Lead.aggregate([...managementPipeline(req.body), { $project: { _id: 1 } }])).map(lead => lead._id) : ids;
     const selectedIds = req.body?.selectAllMatching === true ? matchingIds.filter(id => !excludedIds.some(excluded => String(id) === excluded)) : ids;
-    if (!selectedIds.length || (req.body?.selectAllMatching !== true && (!ids.length || ids.length > 100 || !ids.every(mongoose.isValidObjectId)))) throw new AppError('Choose one to 100 valid leads', 400, 'VALIDATION_ERROR');
+    if (!selectedIds.length || (req.body?.selectAllMatching !== true && (!ids.length || ids.length > 500 || !ids.every(mongoose.isValidObjectId)))) throw new AppError('Choose one to 500 valid leads', 400, 'VALIDATION_ERROR');
     filter = { _id: { $in: selectedIds }, status: 'saved' };
   }
   let result;
