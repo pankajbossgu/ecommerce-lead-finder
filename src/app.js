@@ -334,24 +334,36 @@ function rememberCsvIdentity(input, seenDomains, seenEmails) {
 }
 async function matchImportedRow(row) {
   const normalizedLead = lead => ({ _id: String(lead._id), businessName: lead.businessName, domain: lead.domain });
+  // Each level is deliberately checked on its own. Combining identifiers in an
+  // $or made a single CSV row select every matching Saved lead.
+  const find = query => Lead.find(query).sort({ _id: 1 }).lean();
   let candidates = [];
-  if (row.id && mongoose.isValidObjectId(row.id)) candidates = await Lead.find({ _id: row.id }).lean();
+  if (row.id && mongoose.isValidObjectId(row.id)) candidates = await find({ _id: row.id });
   if (!candidates.length) {
-    const domain = normalizeDomain(row.website); const email = normalizeEmail(row.email); const phone = normalizePhone(row.phone);
-    const identifiers = [ ...(domain ? [{ domain }] : []), ...(email ? [{ emailNormalized: email }, { email }] : []), ...(phone ? [{ phone }] : []) ];
-    if (identifiers.length) candidates = await Lead.find({ $or: identifiers }).lean();
-    // Keep every identifier match: a domain match must not conceal a
-    // separately matched Not Useful record (or the inverse).
+    const domain = normalizeDomain(row.website);
+    if (domain) candidates = await find({ domain });
+  }
+  if (!candidates.length) {
+    const email = normalizeEmail(row.email);
+    if (email) candidates = await find({ $or: [{ emailNormalized: email }, { email }] });
+  }
+  if (!candidates.length) {
+    const phone = normalizePhone(row.phone);
+    if (phone) candidates = await find({ phone });
   }
   if (!candidates.length) {
     const name = normalizeBusinessName(row.business_name);
-    if (!name) return { saved: [], discarded: [] };
-    const byName = await Lead.find({ businessName: { $regex: `^${row.business_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } }).lean();
+    if (!name) return { saved: [], discarded: [], selectedLeadId: null, multipleMatches: false };
+    const byName = await find({ businessName: { $regex: `^${row.business_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
     candidates = byName.filter(lead => normalizeBusinessName(lead.businessName) === name);
   }
+  const saved = candidates.filter(lead => lead.status === 'saved').map(normalizedLead);
   return {
-    saved: candidates.filter(lead => lead.status === 'saved').map(normalizedLead),
-    discarded: candidates.filter(lead => lead.status === 'discarded').map(normalizedLead)
+    saved,
+    discarded: candidates.filter(lead => lead.status === 'discarded').map(normalizedLead),
+    // A Saved lead is selectable only when this matching level identifies one.
+    selectedLeadId: saved.length === 1 ? saved[0]._id : null,
+    multipleMatches: saved.length > 1
   };
 }
 app.post('/api/leads/csv/preview', async (req, res) => {
@@ -376,13 +388,14 @@ app.post('/api/leads/csv/preview', async (req, res) => {
     } else {
       if (!row.business_name) { results.push({ row: rowNumber, status: 'invalid', error: 'Business name is required.' }); continue; }
       const matches = await matchImportedRow(row);
-      if (matches.saved.length && matches.discarded.length) results.push({ row: rowNumber, status: 'found_in_both', savedLeads: matches.saved, notUsefulLeads: matches.discarded });
-      else if (matches.saved.length) results.push({ row: rowNumber, status: 'found_in_lead_management', savedLeads: matches.saved });
+      if (matches.multipleMatches) results.push({ row: rowNumber, status: 'multiple_matches', savedLeads: matches.saved, notUsefulLeads: matches.discarded, error: 'Multiple Lead Management records match this row. Review required.' });
+      else if (matches.saved.length && matches.discarded.length) results.push({ row: rowNumber, status: 'found_in_both', savedLeads: matches.saved, notUsefulLeads: matches.discarded, selectedLeadId: matches.selectedLeadId });
+      else if (matches.saved.length) results.push({ row: rowNumber, status: 'found_in_lead_management', savedLeads: matches.saved, selectedLeadId: matches.selectedLeadId });
       else if (matches.discarded.length) results.push({ row: rowNumber, status: 'found_in_not_useful', notUsefulLeads: matches.discarded });
       else results.push({ row: rowNumber, status: 'not_found' });
     }
   }
-  res.json({ mode, rows: results, counts: { total: rows.length, valid: results.filter(x => x.status === 'valid').length, invalid: results.filter(x => x.status === 'invalid').length, existing: results.filter(x => x.status === 'existing').length, matched: results.filter(x => x.status === 'matched').length, alreadyNotUseful: results.filter(x => x.status === 'already_not_useful').length, foundInLeadManagement: results.filter(x => x.status === 'found_in_lead_management').length, foundInNotUseful: results.filter(x => x.status === 'found_in_not_useful').length, foundInBoth: results.filter(x => x.status === 'found_in_both').length, notFound: results.filter(x => x.status === 'not_found').length } });
+  res.json({ mode, rows: results, counts: { total: rows.length, valid: results.filter(x => x.status === 'valid').length, invalid: results.filter(x => x.status === 'invalid').length, existing: results.filter(x => x.status === 'existing').length, matched: results.filter(x => x.status === 'matched').length, alreadyNotUseful: results.filter(x => x.status === 'already_not_useful').length, foundInLeadManagement: results.filter(x => x.status === 'found_in_lead_management').length, foundInNotUseful: results.filter(x => x.status === 'found_in_not_useful').length, foundInBoth: results.filter(x => x.status === 'found_in_both').length, multipleMatches: results.filter(x => x.status === 'multiple_matches').length, notFound: results.filter(x => x.status === 'not_found').length } });
 });
 app.post('/api/leads/csv/create', async (req, res) => {
   const rows = importRows(req.body); const counts = { created: 0, duplicate: 0, invalid: 0, failed: 0 }; const seenDomains = new Set(); const seenEmails = new Set();
