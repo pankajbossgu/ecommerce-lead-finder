@@ -12,7 +12,7 @@ import { sendEmailBatch, validateEmailProvider } from './services/email.js';
 import { sendBrevoEmailBatch } from './services/brevo.js';
 import { createRfcMessageId, mailboxInput, messageIds, normalizedMessageId, persistCampaignMailboxEmail, persistReceived, receiveEmail, sendMailboxEmail, verifyResendWebhook } from './services/inbox.js';
 import { findLeadDuplicateReason, runDiscovery } from './services.js';
-import { AppError, applyDateRange, assertLeadStatus, isSafePublicUrl, isValidPublicEmail, logger, normalizeDomain, normalizeEmail, normalizePhone, normalizeUrl, parseDateRange, parseDiscoveryInput, parsePagination } from './utils.js';
+import { AppError, applyDateRange, assertLeadStatus, isSafePublicUrl, isValidPublicEmail, logger, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizePhone, normalizeUrl, parseDateRange, parseDiscoveryInput, parsePagination } from './utils.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -148,7 +148,7 @@ app.post('/api/webhooks/resend', express.raw({ type: 'application/json', limit: 
     return res.status(200).json({ received: true });
   } catch (error) { return next(error); }
 });
-app.use(express.json({ limit: '20kb', type: 'application/json' }));
+app.use(express.json({ limit: '1mb', type: 'application/json' }));
 authRoutes(app, loginRateLimit);
 app.get('/api/health', (_req, res) => {
   const connected = mongoose.connection.readyState === 1;
@@ -308,6 +308,60 @@ app.post('/api/leads/manual', async (req, res) => {
     if (error?.code === 11000) throw new AppError('A lead with this website or email already exists', 409, 'DUPLICATE_LEAD');
     throw error;
   }
+});
+// CSV parsing deliberately happens in the browser, but all validation and every
+// mutation is repeated here.  This keeps uploaded spreadsheet values untrusted
+// and sends imports through the same manual creation/duplicate path.
+const csvColumns = new Set(['id', 'business_name', 'website', 'email', 'country', 'phone', 'social_url', 'category', 'city', 'notes']);
+const importRows = body => {
+  if (!Array.isArray(body?.rows) || !body.rows.length || body.rows.length > 500) throw new AppError('CSV must contain between 1 and 500 rows', 400, 'CSV_INVALID');
+  if (!body.rows.every(row => row && typeof row === 'object' && !Array.isArray(row))) throw new AppError('CSV structure is invalid', 400, 'CSV_INVALID');
+  const columns = Object.keys(body.rows[0]);
+  if (columns.some(column => !csvColumns.has(column))) throw new AppError(`Unexpected column: ${columns.find(column => !csvColumns.has(column))}`, 400, 'CSV_INVALID');
+  return body.rows.map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, String(value ?? '').trim()])));
+};
+function csvLeadInput(row) {
+  return manualLeadInput({ businessName: row.business_name, website: row.website, email: row.email, phone: row.phone, category: row.category, location: [row.city, row.country].filter(Boolean).join(', '), notes: row.notes });
+}
+async function matchImportedRow(row) {
+  if (row.id && mongoose.isValidObjectId(row.id)) { const byId = await Lead.findById(row.id).lean(); if (byId) return byId; }
+  const domain = normalizeDomain(row.website); const email = normalizeEmail(row.email); const phone = normalizePhone(row.phone);
+  const candidates = await Lead.find({ $or: [ ...(domain ? [{ domain }] : []), ...(email ? [{ emailNormalized: email }, { email }] : []), ...(phone ? [{ phone }] : []) ] }).lean();
+  if (candidates.length) return candidates.find(lead => domain && lead.domain === domain) || candidates[0];
+  const name = normalizeBusinessName(row.business_name);
+  if (!name) return null;
+  const byName = await Lead.find({ businessName: { $regex: `^${row.business_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } }).lean();
+  return byName.find(lead => normalizeBusinessName(lead.businessName) === name) || null;
+}
+app.post('/api/leads/csv/preview', async (req, res) => {
+  const mode = req.body?.mode;
+  if (!['new', 'existing'].includes(mode)) throw new AppError('Choose an import mode', 400, 'CSV_INVALID');
+  const rows = importRows(req.body); const required = mode === 'new' ? ['business_name', 'website', 'email', 'country'] : ['business_name'];
+  const missing = required.filter(column => !Object.hasOwn(rows[0], column));
+  if (missing.length) throw new AppError(`Missing required column${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`, 400, 'CSV_INVALID');
+  const results = []; const seen = new Set();
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]; const rowNumber = index + 2;
+    if (mode === 'new') {
+      try {
+        const input = csvLeadInput(row); const identity = `${input.domain}|${input.email}`;
+        if (seen.has(identity)) results.push({ row: rowNumber, status: 'existing', error: 'Duplicate row in this CSV.' });
+        else if (await findLeadDuplicateReason(input)) results.push({ row: rowNumber, status: 'existing', error: 'A matching lead already exists.' });
+        else { seen.add(identity); results.push({ row: rowNumber, status: 'valid', input: row }); }
+      } catch (error) { results.push({ row: rowNumber, status: 'invalid', error: error.message }); }
+    } else {
+      if (!row.business_name) { results.push({ row: rowNumber, status: 'invalid', error: 'Business name is required.' }); continue; }
+      const lead = await matchImportedRow(row); results.push(lead ? { row: rowNumber, status: 'matched', lead: { _id: String(lead._id), businessName: lead.businessName, domain: lead.domain } } : { row: rowNumber, status: 'not_found' });
+    }
+  }
+  res.json({ mode, rows: results, counts: { total: rows.length, valid: results.filter(x => x.status === 'valid').length, invalid: results.filter(x => x.status === 'invalid').length, existing: results.filter(x => x.status === 'existing').length, matched: results.filter(x => x.status === 'matched').length, notFound: results.filter(x => x.status === 'not_found').length } });
+});
+app.post('/api/leads/csv/create', async (req, res) => {
+  const rows = importRows(req.body); const preview = await Promise.all(rows.map(async (row, index) => { try { const input = csvLeadInput(row); return { row, index, input, duplicate: await findLeadDuplicateReason(input) }; } catch (error) { return { index, error }; } }));
+  if (preview.some(item => item.error)) throw new AppError('CSV has invalid rows. Review the preview before importing.', 400, 'CSV_INVALID');
+  const unique = new Set(); const actionable = [];
+  for (const item of preview) { const key = `${item.input.domain}|${item.input.email}`; if (!item.duplicate && !unique.has(key)) { unique.add(key); actionable.push(item); } }
+  try { const created = actionable.length ? await Lead.insertMany(actionable.map(item => item.input), { ordered: true }) : []; res.json({ created: created.length, existing: rows.length - created.length }); } catch (error) { if (error?.code === 11000) throw new AppError('A matching lead was created while this import was being confirmed. Please preview again.', 409, 'DUPLICATE_LEAD'); throw error; }
 });
 app.get('/api/leads/:id', async (req, res) => {
   objectId(req.params.id, 'Lead');
