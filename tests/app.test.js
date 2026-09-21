@@ -287,8 +287,10 @@ test('date filters use inclusive UTC calendar days and reject inverted ranges', 
 test('CSV import supports mode-specific templates and a 500-lead workflow', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
-  assert.match(client, /smartlocator-new-leads-template\.csv/); assert.match(client, /business_name,website,email,country/);
-  assert.match(client, /smartlocator-existing-leads-template\.csv/); assert.match(client, /business_name,website,id/);
+  assert.match(client, /smartlocator-new-leads-template\.csv/); assert.match(client, /business_name,website,email,country,category/);
+  assert.match(client, /smartlocator-existing-leads-template\.csv/); assert.match(client, /existing \? 'business_name,website,id\\r\\n' : 'business_name,website,email,country,category\\r\\n'/);
+  assert.match(client, /New leads require <b>business_name, website, email, country, category<\/b>/);
+  assert.match(app, /category: row\.category/); assert.doesNotThrow(() => manualLeadInput({ businessName: 'Acme Store', website: 'https://acme.co', email: 'sales@acme.co', country: 'United Kingdom', category: 'Retail', location: 'London' })); assert.throws(() => manualLeadInput({ businessName: 'Acme Store', website: 'https://acme.co', email: 'sales@acme.co', location: 'London' }), /Category is required/);
   assert.match(client, /Maximum 500 leads can be processed at once\./); assert.match(app, /Maximum 500 leads can be processed at once\./);
   assert.match(app, /already_not_useful/); assert.match(client, /Already Not Useful/);
   assert.match(app, /ids\.length > 500/); assert.match(client, /result\.created} created.*result\.duplicate} duplicate.*result\.invalid} invalid.*result\.failed} failed/);
