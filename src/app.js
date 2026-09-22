@@ -13,6 +13,7 @@ import { sendBrevoEmailBatch } from './services/brevo.js';
 import { createRfcMessageId, mailboxInput, messageIds, normalizedMessageId, persistCampaignMailboxEmail, persistReceived, receiveEmail, sendMailboxEmail, verifyResendWebhook } from './services/inbox.js';
 import { findLeadDuplicateReason, runDiscovery } from './services.js';
 import { AppError, applyDateRange, assertLeadStatus, isSafePublicUrl, isValidPublicEmail, logger, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizePhone, normalizeUrl, parseDateRange, parseDiscoveryInput, parsePagination } from './utils.js';
+import { EMAIL_BRAND } from '../public/js/email-brand.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -486,7 +487,7 @@ app.get('/api/search-history', async (req, res) => {
   const [items, total] = await Promise.all([SearchHistory.find({}).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(), SearchHistory.countDocuments()]);
   res.json({ items, pagination: pagination(page, limit, total) });
 });
-const templateVariables = new Set(['business_name', 'website', 'email', 'phone', 'domain']);
+const templateVariables = new Set(['business_name', 'website', 'email', 'phone', 'domain', ...Object.keys(EMAIL_BRAND)]);
 function cleanText(value, label, max, required = true) { if (typeof value !== 'string') { if (required) throw new AppError(`${label} is required`, 400, 'VALIDATION_ERROR'); return null; } const text = value.trim(); if (required && !text) throw new AppError(`${label} is required`, 400, 'VALIDATION_ERROR'); if (text.length > max) throw new AppError(`${label} must be ${max} characters or fewer`, 400, 'VALIDATION_ERROR'); if (/<\s*script|javascript\s*:/i.test(text)) throw new AppError(`${label} contains unsafe content`, 400, 'VALIDATION_ERROR'); return text; }
 export const skipReasons = Object.freeze(['whatsapp_not_registered', 'invalid_phone', 'wrong_number', 'already_contacted', 'do_not_contact', 'not_relevant', 'other']);
 export function skipReasonInput(value) { if (!skipReasons.includes(value)) throw new AppError('Choose a valid skip reason', 400, 'VALIDATION_ERROR'); return value; }
@@ -504,7 +505,7 @@ function templateInput(body) {
   if (/<\s*script\b|\bon\w+\s*=|javascript\s*:/i.test(htmlBody)) throw new AppError('HTML body contains unsafe executable content.', 400, 'VALIDATION_ERROR');
   return { name: cleanText(body.name, 'Template name', 120), type, subject, body: textBody || '', format, htmlBody };
 }
-function renderTemplate(text, lead) { const values = { business_name: lead.businessName, website: lead.website, email: lead.email, phone: lead.phone || '', domain: lead.domain }; return String(text || '').replace(/{{\s*([a-z_]+)\s*}}/gi, (_match, key) => templateVariables.has(key.toLowerCase()) ? String(values[key.toLowerCase()] ?? '') : ''); }
+export function renderTemplate(text, lead) { const values = { business_name: lead.businessName, website: lead.website, email: lead.email, phone: lead.phone || '', domain: lead.domain, ...EMAIL_BRAND }; return String(text || '').replace(/{{\s*([a-z_]+)\s*}}/gi, (_match, key) => templateVariables.has(key.toLowerCase()) ? String(values[key.toLowerCase()] ?? '') : ''); }
 function templateResponse(item) { return { ...item, format: item.format || 'plain', textBody: item.body || '', htmlBody: item.htmlBody || null }; }
 async function updateCampaignCounts(campaignId) {
   const rows = await CampaignRecipient.aggregate([{ $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } }, { $group: {
