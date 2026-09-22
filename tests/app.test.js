@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline, manualLeadInput, resolveAmbiguousBrevoBatch, skipReasonInput, skipReasons } from '../src/app.js';
+import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline, manualLeadInput, renderTemplate, resolveAmbiguousBrevoBatch, skipReasonInput, skipReasons } from '../src/app.js';
 import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, duplicateReasonForLead, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizeSocialProfileUrl, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 import crypto from 'node:crypto';
 import { conversationFor, createRfcMessageId, messageIds, normalizedMessageId, verifyResendWebhook } from '../src/services/inbox.js';
 import { sendBrevoEmailBatch } from '../src/services/brevo.js';
+import { EMAIL_BRAND } from '../public/js/email-brand.js';
 
 test('mailbox webhook verification rejects missing and invalid signatures and accepts a fresh signed body', () => {
   const raw = Buffer.from('{"type":"email.received"}'); const secret = `whsec_${Buffer.from('mailbox-test-secret').toString('base64')}`; const timestamp = String(Math.floor(Date.now() / 1000)); const id = 'msg_test';
@@ -19,6 +20,13 @@ test('mailbox threading uses reliable reply identifiers and avoids subject-only 
   const conversationId = 'conversation-1';
   assert.equal(conversationFor({ subject: 'Re: Proposal', inReplyTo: '<origin>', references: ['<origin>'] }, [{ conversationId, messageId: '<origin>', subject: 'Proposal' }]), conversationId);
   assert.notEqual(conversationFor({ from: 'a@example.test', fromEmail: 'a@example.test', to: ['b@example.test'], subject: 'Proposal', receivedAt: new Date() }, [{ conversationId, from: 'other@example.test', fromEmail: 'other@example.test', to: ['b@example.test'], subject: 'Proposal', date: new Date(), fallbackSignature: 'other@example.test|b@example.test|proposal' }]), conversationId);
+});
+
+test('template rendering preserves lead variables and resolves centralized SmartLocator brand variables', () => {
+  const lead = { businessName: 'Acme Store', website: 'https://acme.example', email: 'hello@acme.example', phone: '+1 555 0100', domain: 'acme.example' };
+  const variables = '{{business_name}}|{{website}}|{{email}}|{{phone}}|{{domain}}|{{brand_name}}|{{brand_logo}}|{{brand_website}}|{{brand_signup}}|{{brand_overview}}';
+  assert.equal(renderTemplate(variables, lead), `Acme Store|https://acme.example|hello@acme.example|+1 555 0100|acme.example|${EMAIL_BRAND.brand_name}|${EMAIL_BRAND.brand_logo}|${EMAIL_BRAND.brand_website}|${EMAIL_BRAND.brand_signup}|${EMAIL_BRAND.brand_overview}`);
+  assert.equal(renderTemplate('<img src="{{brand_logo}}" alt="{{brand_name}}"><a href="{{brand_signup}}">Start</a>', lead), `<img src="${EMAIL_BRAND.brand_logo}" alt="${EMAIL_BRAND.brand_name}"><a href="${EMAIL_BRAND.brand_signup}">Start</a>`);
 });
 
 test('mailbox RFC identifiers stay distinct from provider ids and References are normalized', () => {
@@ -763,6 +771,9 @@ test('template builder keeps previews on demand, sandboxed, and isolated from ap
   assert.match(client, /connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'/);
   assert.match(client, /sandbox="" referrerpolicy="no-referrer"/);
   assert.match(client, /srcdoc = securePreviewDocument\(source\)/);
+  assert.match(client, /import \{ EMAIL_BRAND \} from '\.\/email-brand\.js';/);
+  assert.match(client, /EMAIL_BRAND\[key\.toLowerCase\(\)\]/);
+  assert.match(client, /\.\.\.Object\.keys\(EMAIL_BRAND\)/);
   assert.match(client, /templateActiveField/);
   assert.match(client, /This will replace the existing fallback text\. Continue\?/);
   assert.match(client, /documentText\.querySelectorAll\('br'\)/);
