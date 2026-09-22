@@ -15,10 +15,10 @@ function brevoResponseError(response, result) {
   return new AppError(reason ? `${message} Brevo: ${reason}` : message, 502, transient ? 'EMAIL_PROVIDER_TRANSIENT' : 'EMAIL_PROVIDER_REJECTED');
 }
 
-export async function sendBrevoEmail({ to, cc = [], bcc = [], subject, text, headers, replyTo }, config = env) {
+export async function sendBrevoEmail({ to, cc = [], bcc = [], subject, text, html, headers, replyTo }, config = env) {
   const readiness = emailConfiguration(config, 'brevo'); if (!readiness.ready) throw new AppError(readiness.reason, 503, readiness.code);
   const sender = resolveEmailSender('brevo', config);
-  const response = await fetch('https://api.brevo.com/v3/smtp/email', { method: 'POST', headers: { 'api-key': config.brevoApiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ sender: { name: sender.name, email: sender.email }, to: to.map(email => ({ email })), ...(cc.length ? { cc: cc.map(email => ({ email })) } : {}), ...(bcc.length ? { bcc: bcc.map(email => ({ email })) } : {}), ...(replyTo ? { replyTo: { email: replyTo } } : {}), subject, textContent: text, ...(headers ? { headers } : {}) }) });
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', { method: 'POST', headers: { 'api-key': config.brevoApiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ sender: { name: sender.name, email: sender.email }, to: to.map(email => ({ email })), ...(cc.length ? { cc: cc.map(email => ({ email })) } : {}), ...(bcc.length ? { bcc: bcc.map(email => ({ email })) } : {}), ...(replyTo ? { replyTo: { email: replyTo } } : {}), subject, textContent: text, ...(html ? { htmlContent: html } : {}), ...(headers ? { headers } : {}) }) });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new AppError(response.status === 429 || response.status >= 500 ? 'Email provider is temporarily unavailable. Retry this batch later.' : 'The email provider rejected this message.', 502, response.status === 429 || response.status >= 500 ? 'EMAIL_PROVIDER_TRANSIENT' : 'EMAIL_PROVIDER_REJECTED');
   return { id: result.messageId || null, from: sender.from };
@@ -32,7 +32,7 @@ export async function sendBrevoEmailBatch(messages, config = env, request = fetc
   // email request and returns an id for each accepted message version.
   let response;
   try {
-    response = await request('https://api.brevo.com/v3/smtp/email', { method: 'POST', headers: { 'api-key': config.brevoApiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ sender: { name: sender.name, email: sender.email }, subject: messages[0].subject, textContent: messages[0].text, messageVersions: messages.map(message => ({ to: [{ email: message.to }], subject: message.subject, textContent: message.text, ...(message.replyTo ? { replyTo: { email: message.replyTo } } : {}) })) }) });
+    response = await request('https://api.brevo.com/v3/smtp/email', { method: 'POST', headers: { 'api-key': config.brevoApiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ sender: { name: sender.name, email: sender.email }, subject: messages[0].subject, textContent: messages[0].text, ...(messages[0].html ? { htmlContent: messages[0].html } : {}), messageVersions: messages.map(message => ({ to: [{ email: message.to }], subject: message.subject, textContent: message.text, ...(message.html ? { htmlContent: message.html } : {}), ...(message.replyTo ? { replyTo: { email: message.replyTo } } : {}) })) }) });
   } catch {
     // Brevo's batch endpoint has no documented idempotency key. A transport
     // error therefore cannot establish whether Brevo accepted this request.
