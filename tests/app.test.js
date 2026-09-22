@@ -753,3 +753,19 @@ test('mailbox Not Useful UI is selection-only, checks before confirmation, and d
   assert.match(client, /item\.leadNotUseful \? ' <em class="mail-not-useful">Not Useful<\/em>' : ''/);
   assert.match(css, /\.mail-not-useful/); assert.match(css, /#fef2f2/); assert.match(css, /#b91c1c/); assert.match(css, /#fecaca/);
 });
+
+
+test('template builder keeps previews on demand, sandboxed, and isolated from application APIs', () => {
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/css/styles.css', import.meta.url), 'utf8');
+  assert.doesNotMatch(client, /template-live-preview|template-preview-pane|updateTemplatePreview/);
+  assert.match(client, /function securePreviewDocument/);
+  assert.match(client, /connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'/);
+  assert.match(client, /sandbox="" referrerpolicy="no-referrer"/);
+  assert.match(client, /srcdoc = securePreviewDocument\(source\)/);
+  assert.match(client, /templateActiveField/);
+  assert.match(client, /This will replace the existing fallback text\. Continue\?/);
+  assert.match(client, /documentText\.querySelectorAll\('br'\)/);
+  assert.match(css, /\.template-workbench \{ display:block/);
+  assert.match(css, /\.full-email-preview\.mobile/);
+});
