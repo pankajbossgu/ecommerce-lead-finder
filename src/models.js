@@ -111,7 +111,10 @@ const templateSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 120 },
   type: { type: String, required: true, enum: ['email', 'whatsapp'], index: true },
   subject: { type: String, default: null, maxlength: 200 },
-  body: { type: String, required: true, maxlength: 10000 }
+  // `body` remains the canonical plain-text body for legacy templates and HTML fallbacks.
+  body: { type: String, default: '', maxlength: 10000 },
+  format: { type: String, enum: ['plain', 'html'], default: 'plain' },
+  htmlBody: { type: String, default: null, maxlength: 200000 }
 }, { timestamps: true, versionKey: false });
 templateSchema.index({ type: 1, updatedAt: -1 });
 const campaignSchema = new mongoose.Schema({
