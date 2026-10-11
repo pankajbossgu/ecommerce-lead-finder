@@ -254,7 +254,9 @@ app.post('/api/discovery/jobs', discoveryRateLimit, async (req, res) => {
 });
 app.get('/api/discovery/current', async (_req, res) => {
   const active = await SearchJob.findOne({ status: { $in: ['queued', 'running'] } }).sort({ createdAt: -1 }).lean();
-  const job = active || await SearchJob.findOne({ _id: { $in: await Lead.distinct('searchJobId', { status: 'new', searchJobId: { $ne: null } }) } }).sort({ createdAt: -1 }).lean();
+  const unresolvedJob = await SearchJob.findOne({ _id: { $in: await Lead.distinct('searchJobId', { status: 'new', searchJobId: { $ne: null } }) } }).sort({ createdAt: -1 }).lean();
+  const latestApiErrorJob = await SearchJob.findOne({ apiErrors: { $exists: true, $ne: [] } }).sort({ createdAt: -1 }).lean();
+  const job = active || unresolvedJob || latestApiErrorJob;
   if (!job) return res.json({ job: null, unresolvedCount: 0 });
   const unresolvedCount = await Lead.countDocuments({ searchJobId: job._id, status: 'new' });
   res.json({ job: discoveryJobResponse(job), unresolvedCount });
