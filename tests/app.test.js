@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { corsOptionsForRequest, deleteCampaign, deleteMatchingLeads, isAllowedCorsOrigin, leadDeletionFilter, leadDeletionPreview, managementPipeline, manualLeadInput, renderTemplate, resolveAmbiguousBrevoBatch, skipReasonInput, skipReasons } from '../src/app.js';
-import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, duplicateReasonForLead, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
+import { activeJobFilter, buildDiscoveryPrompt, candidatesMatch, classifyGeminiApiError, duplicateReasonForLead, isTerminalJobStatus, mergeCandidates, normalizeDiscoveredDomains, prepareLead, runDiscoveryChannels } from '../src/services.js';
 import { assertLeadStatus, isValidPublicEmail, normalizeBusinessName, normalizeDomain, normalizeEmail, normalizeSocialProfileUrl, normalizeUrl, parseDiscoveryInput, parsePagination } from '../src/utils.js';
 import crypto from 'node:crypto';
 import { conversationFor, createRfcMessageId, messageIds, normalizedMessageId, verifyResendWebhook } from '../src/services/inbox.js';
@@ -87,6 +87,21 @@ const ecommerceCandidate = {
   emailSourceType: 'website', isOfficialSocialProfile: null, phoneSourceUrl: null
 };
 
+test('API diagnostics classify common provider failures and redact credentials', () => {
+  assert.equal(classifyGeminiApiError({ status: 401, message: 'API key not valid: AIza123456789012345678901234567890' }).code, 'API_KEY_INVALID');
+  assert.equal(classifyGeminiApiError({ status: 429, message: 'RESOURCE_EXHAUSTED quota exceeded' }).code, 'API_QUOTA_EXCEEDED');
+  assert.equal(classifyGeminiApiError({ status: 429, message: 'Too many requests' }).code, 'API_RATE_LIMITED');
+  assert.equal(classifyGeminiApiError({ message: 'request timed out' }).code, 'API_NETWORK_OR_TIMEOUT');
+  assert.doesNotMatch(classifyGeminiApiError({ status: 401, message: 'API key not valid: AIza123456789012345678901234567890' }).detail, /AIza/);
+});
+test('API diagnostics panel is separate from discovery progress and renders persisted errors', () => {
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(html, /id="api-error-panel"[^>]*hidden/);
+  assert.match(client, /function renderApiErrors\(errors = \[\]\)/);
+  assert.match(client, /renderApiErrors\(job\.apiErrors \|\| \[\]\)/);
+  assert.match(client, /Suggested action:/);
+});
 test('discovery targeting retains physical-product e-commerce requirements and website-first social fallback instructions', () => {
   const prompt = buildDiscoveryPrompt(discoveryInput, 'beauty brands in India');
   assert.match(prompt, /physical-product e-commerce/i);
