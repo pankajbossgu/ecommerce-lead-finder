@@ -238,7 +238,7 @@ app.post('/api/mailbox/messages/not-useful', mailboxRateLimit, async (req, res) 
   res.json({ ...summary, markedLeads: result.modifiedCount || 0 });
 });
 
-const discoveryJobResponse = job => ({ jobId: String(job._id || job.id), status: job.status, mode: job.mode || 'hybrid', requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, error: job.errorMessage, checkpoint: job.checkpoint, discoveryProgress: job.discoveryProgress, createdAt: job.createdAt, completedAt: job.completedAt });
+const discoveryJobResponse = job => ({ jobId: String(job._id || job.id), status: job.status, mode: job.mode || 'hybrid', requested: job.requestedCount, found: job.foundCount, duplicates: job.duplicateCount, rejected: job.rejectedCount, error: job.errorMessage, checkpoint: job.checkpoint, discoveryProgress: job.discoveryProgress, apiErrors: job.apiErrors || [], createdAt: job.createdAt, completedAt: job.completedAt });
 
 app.post('/api/discovery/jobs', discoveryRateLimit, async (req, res) => {
   const unresolved = await Lead.exists({ status: 'new' });
