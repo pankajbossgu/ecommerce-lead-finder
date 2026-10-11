@@ -95,6 +95,7 @@ leadSchema.index({ email: 1 });
 const jobSchema = new mongoose.Schema({
   category: String, location: String, keywords: { type: String, default: '' }, requestedCount: Number, mode: { type: String, enum: ['hybrid', 'website', 'social'], default: 'hybrid' },
   discoveryProgress: { website: { status: { type: String, default: 'waiting' }, candidates: { type: Number, default: 0 }, error: { type: String, default: null } }, social: { status: { type: String, default: 'waiting' }, candidates: { type: Number, default: 0 }, error: { type: String, default: null } }, merging: { type: String, default: 'waiting' }, validation: { type: String, default: 'waiting' } },
+  apiErrors: { type: [{ channel: { type: String, default: 'discovery' }, code: { type: String, required: true }, title: { type: String, required: true }, message: { type: String, required: true }, suggestion: { type: String, default: null }, detail: { type: String, default: null }, httpStatus: { type: Number, default: null }, occurredAt: { type: Date, default: Date.now } }], default: [] },
   status: { type: String, enum: ['queued', 'running', 'completed', 'failed', 'cancelled'], default: 'queued', index: true }, openLock: { type: String, default: 'discovery' },
   foundCount: { type: Number, default: 0 }, duplicateCount: { type: Number, default: 0 }, rejectedCount: { type: Number, default: 0 },
   attempts: { type: Number, default: 0 },
