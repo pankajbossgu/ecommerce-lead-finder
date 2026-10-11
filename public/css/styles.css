@@ -86,6 +86,23 @@ input[type="checkbox"] { width: 18px; min-height: 18px; height: 18px; padding: 0
 .skip-link:focus { top: 12px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
 
+/* Independent API diagnostics panel — separate from discovery progress and provider selection */
+.api-error-panel { margin-top: 18px; padding: 22px; border-color: #e5b7b1; background: #fffaf9; box-shadow: none; }
+.api-error-heading { display: flex; align-items: flex-start; gap: 13px; }
+.api-error-symbol { display: grid; flex: none; width: 34px; height: 34px; place-items: center; border: 1px solid #e4b5af; border-radius: 50%; color: var(--danger-dark); background: #fff0ee; font-weight: 850; }
+.api-error-heading .eyebrow { margin-bottom: 4px; color: var(--danger-dark); }
+.api-error-heading h2 { margin-bottom: 5px; }
+.api-error-heading p:last-child { margin-bottom: 0; color: #76534f; }
+.api-error-list { display: grid; gap: 11px; margin-top: 18px; }
+.api-error-item { padding: 14px 15px; border: 1px solid #efd2ce; border-radius: 10px; background: #fff; overflow-wrap: anywhere; }
+.api-error-item-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.api-error-item-heading strong { color: #762e28; }
+.api-error-item-heading span { color: #795c57; font-size: 11px; font-weight: 750; }
+.api-error-item p { margin: 8px 0 0; color: #543f3b; }
+.api-error-item details { margin-top: 9px; color: #624b46; font-size: 12px; }
+.api-error-item summary { cursor: pointer; font-weight: 750; }
+.api-error-item .api-error-suggestion { padding-top: 8px; border-top: 1px solid #f1e1de; font-size: 13px; }
+@media (max-width: 640px) { .api-error-panel { padding: 17px; } .api-error-item-heading { align-items: flex-start; flex-direction: column; gap: 4px; } }
 /* Discovery */
 .search-card { padding: clamp(22px, 3vw, 32px); }
 fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
