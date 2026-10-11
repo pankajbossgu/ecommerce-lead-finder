@@ -80,9 +80,20 @@ export async function runDiscovery(jobId) {
         const outcome = await runDiscoveryChannels({ ...job, variationIndex, discoveredDomains: checkpoint.discoveredDomains });
         const candidates = outcome.candidates;
         const progress = { ...(job.discoveryProgress || {}) };
-        outcome.channels.forEach((channel, index) => { const result = outcome.results[index]; progress[channel] = { status: result.status === 'fulfilled' ? 'completed' : 'failed', candidates: result.status === 'fulfilled' ? result.value.length : 0, error: result.status === 'rejected' ? 'Lead discovery is temporarily unavailable. Please try again.' : null }; });
+        outcome.channels.forEach((channel, index) => {
+          const result = outcome.results[index];
+          const diagnostic = result.status === 'rejected' ? result.reason?.apiDiagnostic : null;
+          progress[channel] = { status: result.status === 'fulfilled' ? 'completed' : 'failed', candidates: result.status === 'fulfilled' ? result.value.length : 0, error: result.status === 'rejected' ? (diagnostic?.message || 'The discovery API request failed.') : null };
+        });
+        const apiErrors = [...(job.apiErrors || [])];
+        outcome.failures.forEach(({ channel, error }) => {
+          const diagnostic = error?.apiDiagnostic;
+          if (!diagnostic) return;
+          const key = `${channel}:${diagnostic.code}:${diagnostic.detail || ''}`;
+          if (!apiErrors.some(item => `${item.channel}:${item.code}:${item.detail || ''}` === key)) apiErrors.push({ channel, ...diagnostic, occurredAt: new Date() });
+        });
         progress.merging = 'completed'; progress.validation = 'running';
-        const saved = await SearchJob.findOneAndUpdate(ownedWorkerFilter(jobId, token), { $set: { checkpoint: { ...checkpoint, variationIndex, candidateIndex: 0, batchId: crypto.randomUUID(), candidates }, discoveryProgress: progress }, $inc: { attempts: 1 } }, { new: true }).lean();
+        const saved = await SearchJob.findOneAndUpdate(ownedWorkerFilter(jobId, token), { $set: { checkpoint: { ...checkpoint, variationIndex, candidateIndex: 0, batchId: crypto.randomUUID(), candidates }, discoveryProgress: progress, apiErrors }, $inc: { attempts: 1 } }, { new: true }).lean();
         if (!saved) return;
         job.attempts = saved.attempts; checkpoint = saved.checkpoint;
       }
@@ -162,5 +173,15 @@ export async function runDiscovery(jobId) {
     }
     const result = await SearchJob.updateOne(ownedWorkerFilter(jobId, token), { $set: { status: 'completed', completedAt: new Date(), workerToken: null, workerLeaseExpiresAt: null, 'discoveryProgress.validation': 'completed' } });
     if (result.modifiedCount) await SearchHistory.create({ category: fresh.category, location: fresh.location, keywords: fresh.keywords, requestedCount: fresh.requestedCount, mode: fresh.mode || 'hybrid', discoveryProgress: fresh.discoveryProgress, foundCount: fresh.foundCount });
-  } catch (error) { logger.error('Discovery job failed', jobId, error.message); await SearchJob.updateOne(ownedWorkerFilter(jobId, token), { $set: { status: 'failed', errorMessage: error instanceof AppError ? error.message : 'Lead discovery is temporarily unavailable. Please try again.', completedAt: new Date(), workerToken: null, workerLeaseExpiresAt: null } }); }
+  } catch (error) {
+    logger.error('Discovery job failed', jobId, error.message);
+    const diagnostic = error?.apiDiagnostic;
+    const update = { status: 'failed', errorMessage: error instanceof AppError ? error.message : 'Lead discovery could not finish. Please try again.', completedAt: new Date(), workerToken: null, workerLeaseExpiresAt: null };
+    if (diagnostic) {
+      const existing = job.apiErrors || [];
+      const key = `discovery:${diagnostic.code}:${diagnostic.detail || ''}`;
+      update.apiErrors = existing.some(item => `discovery:${item.code}:${item.detail || ''}` === key) ? existing : [...existing, { channel: 'discovery', ...diagnostic, occurredAt: new Date() }];
+    }
+    await SearchJob.updateOne(ownedWorkerFilter(jobId, token), { $set: update });
+  }
 }
